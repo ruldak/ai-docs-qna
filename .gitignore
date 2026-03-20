@@ -1,0 +1,82 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# Environment variables
+.env
+.env.*
+
+# FastAPI / Uvicorn
+*.log
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+
+# Type checking
+.mypy_cache/
+.pyre/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Alembic migrations (optional, kalau mau di-ignore)
+# migrations/versions/*.py
+# migrations/versions/*.pyc
+
+# SQLite database (kalau pakai)
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.swp
+*.swo
+*~
