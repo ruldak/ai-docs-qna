@@ -6,6 +6,7 @@ from sqlalchemy import select, update, delete
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi_jwt import JwtAuthorizationCredentials
+from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/api")
 
@@ -22,8 +23,8 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
 
         is_user_exist = get_user.scalars().first()
 
-        if is_user_exist:
-            raise HTTPException(status_code=400, detail="email already taken")
+        # if is_user_exist:
+        #     raise HTTPException(status_code=400, detail="email already taken")
 
         hashed_pw = utils.get_password_hash(user.password)
 
@@ -33,11 +34,20 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
         await db.refresh(user_instance)
 
         return user_instance
+    except IntegrityError as e:
+        await db.rollback()
+
+        print(f"register integrity error: {e}")
+
+        if "unique" in str(e.orig).lower():
+            raise HTTPException(status_code=400, detail="email already taken")
+                
+        raise HTTPException(status_code=400, detail="An error occurred in the data.")
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"erorr: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"error: {e}")
 
 @router.post("/users/login", response_model=schemas.LoginResponse)
 async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
