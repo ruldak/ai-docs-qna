@@ -3,6 +3,14 @@ from typing import Optional
 from datetime import datetime
 
 # ---------- User Schemas ----------
+class LoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
