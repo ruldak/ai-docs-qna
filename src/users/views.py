@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, HTTPException, Security, UploadFile, File, Form
 from . import utils, service, models, schemas
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
@@ -7,12 +7,39 @@ from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi_jwt import JwtAuthorizationCredentials
 from sqlalchemy.exc import IntegrityError
+from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
+import chromadb
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.readers.file import PDFReader, DocxReader
+import os
+from dotenv import load_dotenv
+import fitz
+from llama_index.core import Document
+
+load_dotenv()
 
 router = APIRouter(prefix="/api")
 
-@router.get("/users/me")
+@router.get("/users/me", response_model=schemas.User, status_code=200)
 async def users(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
-    return {"message": credentials.subject["email"]}
+    try:
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == credentials.subject["user_id"]
+        ))
+
+        user_exist = get_user.scalars().first()
+
+        if not user_exist:
+            raise HTTPException(status_code=404, detail="user not found.")
+        
+        return user_exist
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"user get error 500: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error.")
 
 @router.post("/users/register", response_model=schemas.User, status_code=201)
 async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
@@ -23,8 +50,8 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
 
         is_user_exist = get_user.scalars().first()
 
-        # if is_user_exist:
-        #     raise HTTPException(status_code=400, detail="email already taken")
+        if is_user_exist:
+            raise HTTPException(status_code=400, detail="email already taken")
 
         hashed_pw = utils.get_password_hash(user.password)
 
@@ -52,18 +79,145 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
 @router.post("/users/login", response_model=schemas.LoginResponse)
 async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     try:
-        get_user = await db.execute(select(models.User.password).where(
+        get_user = await db.execute(select(models.User).where(
             models.User.email == user.email
         ))
 
-        user_pw = get_user.scalars().first()
+        user_data = get_user.scalars().first()
 
-        if not user_pw:
+        if not user_data:
             raise HTTPException(status_code=404, detail="user with that email not found.")
     
-        if utils.verify_password(user.password, user_pw):
-            access_token = utils.access_security.create_access_token(subject={"email": user.email})
-            refresh_token = utils.access_security.create_refresh_token(subject={"email": user.email})
+        if utils.verify_password(user.password, user_data.password):
+            access_token = utils.access_security.create_access_token(subject={"user_id": user_data.id})
+            refresh_token = utils.access_security.create_refresh_token(subject={"user_id": user_data.id})
+        else:
+            raise HTTPException(status_code=403, detail="password incorrect")
+
+        return {"access_token": access_token, "refresh_token": refresh_token}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"error: {e}")
+
+
+@router.post("/documents/post", status_code=201)
+async def post_document(
+        title: str = Form(...),
+        description: str = Form(...),
+        file: UploadFile = File(...),
+        db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+    ):
+    try:
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User.role).where(
+            models.User.id == credentials.subject["user_id"]
+        ))
+
+        user_role = get_user.scalars().first()
+
+        if not user_role:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # ---------- Check if the title is already in use ----------
+        get_document = await db.execute(select(models.Document.title).where(
+            models.Document.title == title
+        ))
+
+        document_exist = get_document.scalars().first()
+
+        if document_exist:
+            raise HTTPException(status_code=400, detail="title already in use.")
+
+        # ---------- Read and insert file into the vector store ----------
+        content = await file.read()
+        
+        doc = fitz.open(stream=content, filetype="pdf")
+
+        texts = []
+        for page in doc:
+            texts.append(page.get_text())
+
+
+        text = "\n".join(texts)
+
+        docs = [
+            Document(
+                text=text,
+                metadata={
+                    "title": title,
+                    "description": description,
+                    "filename": file.filename
+                }
+            ),
+        ]
+
+        client = chromadb.CloudClient(
+            api_key=os.getenv("API_KEY"),
+            tenant=os.getenv("TENANT"),
+            database='fastapi_qna_legal_documents'
+        )
+
+        collection = client.get_or_create_collection("legal_documents")
+        vstore = ChromaVectorStore(chroma_collection=collection)
+
+        embed_model = HuggingFaceInferenceAPIEmbedding(
+            model_name="intfloat/multilingual-e5-large",
+            token=os.getenv("HUGGING_FACE_API_KEY")
+        )
+
+        pipeline = IngestionPipeline(
+            transformations=[
+                SentenceSplitter(chunk_size=512),
+                embed_model
+            ],
+            vector_store=vstore
+        )
+
+        nodes = await pipeline.arun(documents=docs)
+
+        # ---------- Insert the file's informations into the database ----------
+        document_instance = models.Document(title=title, description=description, chunk_count=len(nodes))
+        db.add(document_instance)
+        await db.commit()
+        await db.refresh(document_instance)
+
+        return document_instance
+    except IntegrityError as e:
+        await db.rollback()
+
+        print(f"post document integrity error: {e}")
+
+        if "unique" in str(e.orig).lower():
+            raise HTTPException(status_code=400, detail="title already in use.")
+                
+        raise HTTPException(status_code=400, detail="An error occurred in the data.")
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise e
+
+@router.post("/chat/ask", response_model=schemas.LoginResponse)
+async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
+    try:
+        get_user = await db.execute(select(models.User).where(
+            models.User.email == user.email
+        ))
+
+        user_data = get_user.scalars().first()
+
+        if not user_data:
+            raise HTTPException(status_code=404, detail="user with that email not found.")
+    
+        if utils.verify_password(user.password, user_data.password):
+            access_token = utils.access_security.create_access_token(subject={"user_id": user_data.id})
+            refresh_token = utils.access_security.create_refresh_token(subject={"user_id": user_data.id})
         else:
             raise HTTPException(status_code=403, detail="password incorrect")
 
