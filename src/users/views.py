@@ -101,6 +101,23 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"error: {e}")
 
 
+@router.get("/documents", status_code=200)
+async def get_documents(db: AsyncSession = Depends(get_db)):
+    try:
+        # ---------- Get documents ----------
+        get_documents = await db.execute(select(models.Document))
+
+        documents = get_documents.scalars().all()
+
+        if not documents:
+            raise HTTPException(status_code=404, detail="No documents found.")
+
+        return {"detail": documents}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise e
+
 @router.post("/documents/post", status_code=201)
 async def post_document(
         title: str = Form(...),
@@ -203,26 +220,52 @@ async def post_document(
         await db.rollback()
         raise e
 
-@router.post("/chat/ask", response_model=schemas.LoginResponse)
-async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
+@router.delete("/documents/delete", status_code=204)
+async def delete_document(
+        id: str,
+        db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+    ):
     try:
-        get_user = await db.execute(select(models.User).where(
-            models.User.email == user.email
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User.role).where(
+            models.User.id == credentials.subject["user_id"]
         ))
 
-        user_data = get_user.scalars().first()
+        user_role = get_user.scalars().first()
 
-        if not user_data:
-            raise HTTPException(status_code=404, detail="user with that email not found.")
-    
-        if utils.verify_password(user.password, user_data.password):
-            access_token = utils.access_security.create_access_token(subject={"user_id": user_data.id})
-            refresh_token = utils.access_security.create_refresh_token(subject={"user_id": user_data.id})
-        else:
-            raise HTTPException(status_code=403, detail="password incorrect")
+        if not user_role:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        return {"access_token": access_token, "refresh_token": refresh_token}
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # ---------- Get the document ----------
+        get_document = await db.execute(select(models.Document).where(
+            models.Document.id == int(id)
+        ))
+
+        document_exist = get_document.scalars().first()
+
+        if not document_exist:
+            raise HTTPException(status_code=404, detail="Document not found.")
+
+        client = chromadb.CloudClient(
+            api_key=os.getenv("API_KEY"),
+            tenant=os.getenv("TENANT"),
+            database='fastapi_qna_legal_documents'
+        )
+
+        collection = client.get_or_create_collection("legal_documents")
+        collection.delete(where={"title": document_exist.title})
+        
+        await db.delete(document_exist)
+        await db.commit()
+
+        return {"detail": "Deleted Successfully."}
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"error: {e}")
+        await db.rollback()
+        raise e
