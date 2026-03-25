@@ -150,10 +150,20 @@ async def post_document(
         if document_exist:
             raise HTTPException(status_code=400, detail="title already in use.")
 
+        # ---------- make sure the file type is supported ----------
+        if file.content_type not in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "application/pdf"]:
+            raise HTTPException(status_code=400, detail="file type is not supported.")
+
+        # ---------- make sure file size is under 5mb ----------
+        if file.size > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="file size exceeds the specified maximum limit (5mb).")
+
         # ---------- Read and insert file into the vector store ----------
         content = await file.read()
         
-        doc = fitz.open(stream=content, filetype="pdf")
+        if file.content_type == "application/pdf":
+            doc = fitz.open(stream=content, filetype="pdf")
+
 
         texts = []
         for page in doc:
