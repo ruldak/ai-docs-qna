@@ -17,6 +17,8 @@ import os
 from dotenv import load_dotenv
 import fitz
 from llama_index.core import Document
+import docx2txt
+import io
 
 load_dotenv()
 
@@ -164,13 +166,19 @@ async def post_document(
         if file.content_type == "application/pdf":
             doc = fitz.open(stream=content, filetype="pdf")
 
+            texts = []
+            for page in doc:
+                texts.append(page.get_text())
 
-        texts = []
-        for page in doc:
-            texts.append(page.get_text())
-
-
-        text = "\n".join(texts)
+            text = "\n".join(texts)
+        
+        elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            # EN: wrap the read binary data with BytesIO so that it can be read() again because docx2txt.process() needs it.
+            # ID: bungkus data biner yang telah dibaca dengan BytesIO supaya bisa di read() ulang karena docx2txt.process() butuh itu.
+            file_like = io.BytesIO(content)
+            text = docx2txt.process(file_like)
+        elif file.content_type == "text/plain":
+            text = content.decode("utf-8")
 
         docs = [
             Document(
