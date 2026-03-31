@@ -19,6 +19,9 @@ import fitz
 from llama_index.core import Document
 import docx2txt
 import io
+from typing import Optional
+import asyncio
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -120,7 +123,117 @@ async def get_documents(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise e
 
-@router.post("/documents/post", status_code=201)
+@router.put("/documents/{document_id}", status_code=200)
+async def update_document(
+        document_id: int,
+        title: Optional[str] = Form(None),
+        description: Optional[str] = Form(None),
+        file: Optional[UploadFile] = File(None),
+        db: AsyncSession = Depends(get_db)
+    ):
+    try:
+        if not title and not description and not file:
+            raise HTTPException(status_code=400, detail="One of the fields must be filled in.")
+
+        new_values = {}
+
+        if file:
+            client = chromadb.CloudClient(
+                api_key=os.getenv("API_KEY"),
+                tenant=os.getenv("TENANT"),
+                database='fastapi_qna_legal_documents'
+            )
+
+            collection = client.get_or_create_collection("legal_documents")
+            vstore = ChromaVectorStore(chroma_collection=collection)
+
+            # ---------- make sure the file type is supported ----------
+            if file.content_type not in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "application/pdf"]:
+                raise HTTPException(status_code=400, detail="file type is not supported.")
+
+            # ---------- make sure file size is under 5mb ----------
+            if file.size > 5 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="file size exceeds the specified maximum limit (5mb).")
+
+            # ---------- retrieve the document based on the given ID ----------
+            get_document = await db.execute(select(models.Document).where(
+                models.Document.id == document_id
+            ))
+
+            document = get_document.scalars().first()
+
+            # ---------- delete existing document nodes ----------
+            await asyncio.to_thread(
+                vstore._collection.delete,
+                where={"id": document_id}
+            )
+
+            # ---------- Read and insert file into the vector store ----------
+            content = await file.read()
+            
+            if file.content_type == "application/pdf":
+                doc = fitz.open(stream=content, filetype="pdf")
+
+                texts = []
+                for page in doc:
+                    texts.append(page.get_text())
+
+                text = "\n".join(texts)
+            
+            elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                # EN: wrap the read binary data with BytesIO so that it can be read() again because docx2txt.process() needs it.
+                # ID: bungkus data biner yang telah dibaca dengan BytesIO supaya bisa di read() ulang karena docx2txt.process() butuh itu.
+                file_like = io.BytesIO(content)
+                text = docx2txt.process(file_like)
+            elif file.content_type == "text/plain":
+                text = content.decode("utf-8")
+
+            docs = [
+                Document(
+                    text=text,
+                    metadata={
+                        "title": document.title,
+                        "description": document.description,
+                        "filename": file.filename,
+                        "id": document_id
+                    }
+                ),
+            ]
+
+            embed_model = HuggingFaceInferenceAPIEmbedding(
+                model_name="intfloat/multilingual-e5-large",
+                token=os.getenv("HUGGING_FACE_API_KEY")
+            )
+
+            pipeline = IngestionPipeline(
+                transformations=[
+                    SentenceSplitter(chunk_size=512),
+                    embed_model
+                ],
+                vector_store=vstore
+            )
+
+            nodes = await pipeline.arun(documents=docs)
+            new_values["chunk_count"] = len(nodes)
+            new_values["indexed_at"] = datetime.now(timezone.utc)
+
+        if title:
+            new_values["title"] = title
+
+        if description:
+            new_values["description"] = description
+
+        if new_values:
+            stmt = update(models.Document).where(models.Document.id == document_id).values(**new_values)
+            await db.execute(stmt)
+            await db.commit()
+
+        return {"message": "Successfully updated."}
+    except Exception as e:
+        raise e
+    
+
+@router.post("/documents", status_code=201)
 async def post_document(
         title: str = Form(...),
         description: str = Form(...),
@@ -160,6 +273,13 @@ async def post_document(
         if file.size > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="file size exceeds the specified maximum limit (5mb).")
 
+
+        # ---------- Insert the file's informations into the database ----------
+        document_instance = models.Document(title=title, description=description, chunk_count=0)
+        db.add(document_instance)
+        await db.flush()
+
+
         # ---------- Read and insert file into the vector store ----------
         content = await file.read()
         
@@ -186,7 +306,8 @@ async def post_document(
                 metadata={
                     "title": title,
                     "description": description,
-                    "filename": file.filename
+                    "filename": file.filename,
+                    "id": document_instance.id
                 }
             ),
         ]
@@ -215,11 +336,8 @@ async def post_document(
 
         nodes = await pipeline.arun(documents=docs)
 
-        # ---------- Insert the file's informations into the database ----------
-        document_instance = models.Document(title=title, description=description, chunk_count=len(nodes))
-        db.add(document_instance)
+        document_instance.chunk_count = len(nodes)
         await db.commit()
-        await db.refresh(document_instance)
 
         return document_instance
     except IntegrityError as e:
@@ -238,9 +356,9 @@ async def post_document(
         await db.rollback()
         raise e
 
-@router.delete("/documents/delete", status_code=204)
+@router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
-        id: str,
+        document_id: int,
         db: AsyncSession = Depends(get_db),
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
@@ -260,7 +378,7 @@ async def delete_document(
 
         # ---------- Get the document ----------
         get_document = await db.execute(select(models.Document).where(
-            models.Document.id == int(id)
+            models.Document.id == document_id
         ))
 
         document_exist = get_document.scalars().first()
@@ -275,7 +393,7 @@ async def delete_document(
         )
 
         collection = client.get_or_create_collection("legal_documents")
-        collection.delete(where={"title": document_exist.title})
+        collection.delete(where={"id": document_id})
         
         await db.delete(document_exist)
         await db.commit()
