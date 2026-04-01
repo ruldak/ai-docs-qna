@@ -129,9 +129,24 @@ async def update_document(
         title: Optional[str] = Form(None),
         description: Optional[str] = Form(None),
         file: Optional[UploadFile] = File(None),
-        db: AsyncSession = Depends(get_db)
+        db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User.role).where(
+            models.User.id == credentials.subject["user_id"]
+        ))
+
+        user_role = get_user.scalars().first()
+
+        if not user_role:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # ---------- Check if all fields are empty ----------
         if not title and not description and not file:
             raise HTTPException(status_code=400, detail="One of the fields must be filled in.")
 
@@ -202,7 +217,8 @@ async def update_document(
 
             embed_model = HuggingFaceInferenceAPIEmbedding(
                 model_name="intfloat/multilingual-e5-large",
-                token=os.getenv("HUGGING_FACE_API_KEY")
+                token=os.getenv("HUGGING_FACE_API_KEY"),
+                timeout=500
             )
 
             pipeline = IngestionPipeline(
