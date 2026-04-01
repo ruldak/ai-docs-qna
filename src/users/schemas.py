@@ -41,3 +41,8 @@ class Document(DocumentBase):
 
     class Config:
         from_attributes = True
+
+# ---------- Query Schemas ----------
+class Query(BaseModel):
+    document_id: int
+    message: str
