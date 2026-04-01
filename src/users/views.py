@@ -22,10 +22,14 @@ import io
 from typing import Optional
 import asyncio
 from datetime import datetime, timezone
+from llama_index.core.agent import ReActAgent
+from llama_index.core.tools import FunctionTool
+from llama_index.core.tools import QueryEngineTool
 
 load_dotenv()
 
 router = APIRouter(prefix="/api")
+query_tools = utils.QueryTools()
 
 @router.get("/users/me", response_model=schemas.User, status_code=200)
 async def users(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
@@ -420,4 +424,34 @@ async def delete_document(
         raise
     except Exception as e:
         await db.rollback()
+        raise e
+
+@router.post("/query", status_code=200)
+async def query(input: schemas.Query):
+    try:
+        llm = query_tools.llm()
+
+        retriever_tool = QueryEngineTool.from_defaults(
+            query_engine=query_tools.query_documents(input.document_id),
+            name="query_engine",
+            description="Use this tool to answer questions based on specific documents."
+        )
+
+        prompt = """You are an AI assistant specialized in legal documents. The user provides a document ID; retrieve and use only that document as context. 
+        If asked about the document’s content, respond 100% based on the document without modification. If asked to explain, you may paraphrase for clarity but must preserve the original meaning. 
+        Do not add assumptions or external information. If the answer is not found, say you don’t know.
+
+        If the user asks about constitutional text, clearly separate:
+        1) original text (verbatim)
+        2) explanation
+        3) derived concepts (such as "pokok pikiran")
+
+        Never merge them into one paragraph.
+        """
+
+        agent = ReActAgent(tools=[retriever_tool], llm=llm, verbose=True, system_prompt=prompt)
+        result = await agent.run(input.message)
+
+        return jsonable_encoder(result)
+    except Exception as e:
         raise e
