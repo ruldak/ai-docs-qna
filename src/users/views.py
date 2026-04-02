@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Security, UploadFile, File, Form
-from . import utils, service, models, schemas
+from . import utils, service, models, schemas, constants
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from sqlalchemy import select, update, delete
@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.core.tools import QueryEngineTool
+from llama_index.storage.chat_store.postgres import PostgresChatStore
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.llms import ChatMessage
 
 load_dotenv()
 
@@ -426,32 +429,79 @@ async def delete_document(
         await db.rollback()
         raise e
 
-@router.post("/query", status_code=200)
-async def query(input: schemas.Query):
+# TODO: mengganti tempat menyimpan chat history ke model SQLAlchemy
+@router.post("/c/{chat_session_id}", status_code=200)
+async def query(chat_session_id: str, input: schemas.Query):
     try:
         llm = query_tools.llm()
 
-        retriever_tool = QueryEngineTool.from_defaults(
-            query_engine=query_tools.query_documents(input.document_id),
-            name="query_engine",
-            description="Use this tool to answer questions based on specific documents."
+        query_documents = FunctionTool.from_defaults(
+            fn=query_tools.query_documents,
+            name="query_documents",
+            description="Query documents based on questions related to the document and doc_id."
         )
 
-        prompt = """You are an AI assistant specialized in legal documents. The user provides a document ID; retrieve and use only that document as context. 
-        If asked about the document’s content, respond 100% based on the document without modification. If asked to explain, you may paraphrase for clarity but must preserve the original meaning. 
-        Do not add assumptions or external information. If the answer is not found, say you don’t know.
+        load_chats = FunctionTool.from_defaults(
+            fn=query_tools.load_chat_history,
+            name="load_chat_history",
+            description="Use this tool to view the context of previous conversations."
+        )
 
-        If the user asks about constitutional text, clearly separate:
-        1) original text (verbatim)
-        2) explanation
-        3) derived concepts (such as "pokok pikiran")
+        chat_store = PostgresChatStore.from_uri(
+            uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
+        )
 
-        Never merge them into one paragraph.
+        chat_memory = ChatMemoryBuffer.from_defaults(
+            token_limit=3000,
+            chat_store=chat_store,
+            chat_store_key=chat_session_id
+        )
+
+        prompt = f"""You are an AI assistant specialized in legal documents.
+        You have two tools:
+        1. `query_documents` that accepts `message` and `document_id`
+        2. `load_chat_history` that retrieves previous conversation context
+
+        IMPORTANT RULES:
+        - ALWAYS call `load_chat_history` BEFORE answering any question to get full conversation context.
+        - ONLY call `query_documents` if the user's question explicitly asks for information from a specific document.
+        - If the user asks about your behavior, asks you to not use tools, or says anything unrelated to document content, respond directly WITHOUT calling `query_documents`.
+        - When you do call `query_documents`, use the document_id provided in the user's message (extract it from the text).
+        - Otherwise, reply conversationally.
+
+        Current document_id in context: {input.document_id}
+        Current session id: {chat_session_id}
         """
 
-        agent = ReActAgent(tools=[retriever_tool], llm=llm, verbose=True, system_prompt=prompt)
+        agent = ReActAgent(tools=[query_documents, load_chats], llm=llm, verbose=True, system_prompt=prompt)
+
         result = await agent.run(input.message)
+
+        chat_store.add_message(
+            key=chat_session_id, 
+            message=ChatMessage(role="user", content=input.message)
+        )
+
+        chat_store.add_message(
+            key=chat_session_id, 
+            message=ChatMessage(role="assistant", content=result.response.blocks[0].text)
+        )
 
         return jsonable_encoder(result)
     except Exception as e:
         raise e
+
+# ---- will fix this later -----
+@router.get("/c/history", status_code=200)
+async def query():
+    chat_store = PostgresChatStore.from_uri(
+        uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
+    )
+
+    messages = await chat_store.aget_messages(key="session_2")
+    # res = ""
+    # for msg in messages:
+    #     res += str(msg) + "\n"
+    # print(res + "user: halo")
+
+    return jsonable_encoder(messages)
