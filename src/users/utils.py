@@ -1,6 +1,7 @@
 from pwdlib import PasswordHash
 import os
 from dotenv import load_dotenv
+from . import constants
 
 load_dotenv()
 
@@ -52,7 +53,7 @@ class QueryTools:
             database=self.database
         )
 
-    def query_documents(self, document_id: int):
+    async def query_documents(self, message: str, document_id: int):
         """Answer questions based on specific documents."""
         client = self.client()
         Settings.llm = self.llm()
@@ -72,4 +73,20 @@ class QueryTools:
             ]
         )
 
-        return index.as_query_engine(filters=filters, similarity_top_k=2, response_mode="tree_summarize")
+        query_engine = index.as_query_engine(filters=filters, similarity_top_k=2, response_mode="tree_summarize")
+
+        response = await query_engine.aquery(message)
+
+        print(response)
+        return response
+
+    async def load_chat_history(session_id: str):
+        chat_store = PostgresChatStore.from_uri(
+            uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
+        )
+
+        messages = await chat_store.aget_messages(key=session_id)
+        res = ""
+        for msg in messages:
+            res += str(msg) + "\n"
+        return res
