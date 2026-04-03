@@ -32,6 +32,7 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.llms.groq import Groq
 from llama_index.core.vector_stores import MetadataFilter, MetadataFilters, FilterOperator
+from . import models
 
 class QueryTools:
     """docstring for ClassName"""
@@ -77,16 +78,4 @@ class QueryTools:
 
         response = await query_engine.aquery(message)
 
-        print(response)
         return response
-
-    async def load_chat_history(session_id: str):
-        chat_store = PostgresChatStore.from_uri(
-            uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
-        )
-
-        messages = await chat_store.aget_messages(key=session_id)
-        res = ""
-        for msg in messages:
-            res += str(msg) + "\n"
-        return res
