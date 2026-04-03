@@ -422,17 +422,76 @@ async def delete_document(
         await db.commit()
 
         return {"detail": "Deleted Successfully."}
-    except HTTPException:
+    except HTTPException as e:
         await db.rollback()
-        raise
+        raise e
     except Exception as e:
         await db.rollback()
         raise e
 
-# TODO: mengganti tempat menyimpan chat history ke model SQLAlchemy
 @router.post("/c/{chat_session_id}", status_code=200)
-async def query(chat_session_id: str, input: schemas.Query):
+async def query(
+        chat_session_id: int,
+        input: schemas.Query,
+        db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+    ):
     try:
+        user_id = credentials.subject["user_id"]
+
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+
+        # ---------- Check if the session id exist ----------
+        get_chat_sessions = await db.execute(select(models.ChatSession).where(
+            models.ChatSession.id == chat_session_id
+        ))
+
+        chat_sessions = get_chat_sessions.scalars().first()
+
+        if not chat_sessions:
+            raise HTTPException(status_code=404, detail="No session found.")
+
+        # ---------- Check if the document exist ----------
+        get_document = await db.execute(select(models.Document).where(
+            models.Document.id == input.document_id
+        ))
+
+        document = get_document.scalars().first()
+
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found.")
+
+        # ------- chat loading tool --------
+        async def load_chat_history():
+            get_messages = await db.execute(select(models.ChatMessage).where(
+                models.ChatMessage.session_id == chat_session_id
+            ))
+
+            messages = get_messages.scalars().all()
+
+            if not messages:
+                return f"No messages in session id {chat_session_id}"
+
+            str_messages = ""
+            for msg in messages:
+                str_messages += f"{msg.role}: {msg.content}\n"
+
+            return str_messages
+
+
+        # ---------- Insert user message into the database ----------
+        user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
+        db.add(user_chat_message)
+
         llm = query_tools.llm()
 
         query_documents = FunctionTool.from_defaults(
@@ -442,19 +501,9 @@ async def query(chat_session_id: str, input: schemas.Query):
         )
 
         load_chats = FunctionTool.from_defaults(
-            fn=query_tools.load_chat_history,
+            async_fn=load_chat_history,
             name="load_chat_history",
             description="Use this tool to view the context of previous conversations."
-        )
-
-        chat_store = PostgresChatStore.from_uri(
-            uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
-        )
-
-        chat_memory = ChatMemoryBuffer.from_defaults(
-            token_limit=3000,
-            chat_store=chat_store,
-            chat_store_key=chat_session_id
         )
 
         prompt = f"""You are an AI assistant specialized in legal documents.
@@ -470,38 +519,112 @@ async def query(chat_session_id: str, input: schemas.Query):
         - Otherwise, reply conversationally.
 
         Current document_id in context: {input.document_id}
-        Current session id: {chat_session_id}
         """
 
         agent = ReActAgent(tools=[query_documents, load_chats], llm=llm, verbose=True, system_prompt=prompt)
 
         result = await agent.run(input.message)
 
-        chat_store.add_message(
-            key=chat_session_id, 
-            message=ChatMessage(role="user", content=input.message)
-        )
-
-        chat_store.add_message(
-            key=chat_session_id, 
-            message=ChatMessage(role="assistant", content=result.response.blocks[0].text)
-        )
+        # ---------- Insert the ai answer into the database and commit ----------
+        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=result.response.blocks[0].text)
+        db.add(assistant_chat_message)
+        await db.commit()
 
         return jsonable_encoder(result)
     except Exception as e:
+        await db.rollback()
         raise e
 
-# ---- will fix this later -----
-@router.get("/c/history", status_code=200)
-async def query():
-    chat_store = PostgresChatStore.from_uri(
-        uri=f"postgresql+asyncpg://{constants.db_user}:{constants.db_password}@{constants.db_host}/{constants.db_name}"
-    )
+@router.get("/c/history/{session_id}", status_code=200)
+async def get_chat_history(
+        session_id: int, db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+    ):
+    try:
+        user_id = credentials.subject["user_id"]
 
-    messages = await chat_store.aget_messages(key="session_2")
-    # res = ""
-    # for msg in messages:
-    #     res += str(msg) + "\n"
-    # print(res + "user: halo")
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
 
-    return jsonable_encoder(messages)
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- retrieve chat messages from the given session id and user id. ----------
+        get_messages = await db.execute(select(models.ChatMessage).where(
+            models.ChatMessage.session_id == session_id,
+            models.ChatMessage.user_id == user_id
+        ))
+
+        messages = get_messages.scalars().all()
+
+        if not messages:
+            raise HTTPException(status_code=404, detail="Session's message not found.")
+        
+        return messages
+    except Exception as e:
+        raise e
+
+@router.get("/sessions", status_code=200)
+async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+    try:
+        user_id = credentials.subject["user_id"]
+
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- Load all of the chat sessions ----------
+        get_chat_sessions = await db.execute(select(models.ChatSession).where(
+            models.ChatSession.user_id == user_id
+        ))
+
+        chat_sessions = get_chat_sessions.scalars().all()
+
+        if not chat_sessions:
+            raise HTTPException(status_code=404, detail="No session found.")
+
+        return chat_sessions
+    except Exception as e:
+        await db.rollback()
+        raise e
+    except HTTPException as e:
+        await db.rollback()
+        raise e
+
+@router.post("/sessions", status_code=201)
+async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+    try:
+        user_id = credentials.subject["user_id"]
+
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- Create new chat session ----------
+        chat_session = models.ChatSession(user_id=user_id)
+        db.add(chat_session)
+        await db.commit()
+
+        return chat_session
+    except Exception as e:
+        await db.rollback()
+        raise e
+    except HTTPException as e:
+        await db.rollback()
+        raise e
