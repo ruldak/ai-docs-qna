@@ -569,7 +569,7 @@ async def get_chat_history(
         raise e
 
 @router.get("/sessions", status_code=200)
-async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
     try:
         user_id = credentials.subject["user_id"]
 
