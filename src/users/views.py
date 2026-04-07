@@ -28,6 +28,7 @@ from llama_index.core.tools import QueryEngineTool
 from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
+from llama_index.core.agent.workflow import FunctionAgent
 
 load_dotenv()
 
@@ -450,6 +451,9 @@ async def query(
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
 
+        if not chat_session_id:
+            raise HTTPException(status_code=400, detail="Session id is required.")
+
         # ---------- Check if the session id exist ----------
         get_chat_sessions = await db.execute(select(models.ChatSession).where(
             models.ChatSession.id == chat_session_id
@@ -469,9 +473,8 @@ async def query(
 
         if not document:
             raise HTTPException(status_code=404, detail="Document not found.")
-
-        # ------- chat loading tool --------
-        async def load_chat_history():
+            
+        async def load_conversation_history():
             get_messages = await db.execute(select(models.ChatMessage).where(
                 models.ChatMessage.session_id == chat_session_id
             ))
@@ -487,32 +490,29 @@ async def query(
 
             return str_messages
 
-
         # ---------- Insert user message into the database ----------
         user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
         db.add(user_chat_message)
 
-        llm = query_tools.llm()
+        llm = query_tools.llm(0.6)
 
         query_documents = FunctionTool.from_defaults(
             fn=query_tools.query_documents,
             name="query_documents",
-            description="Query documents based on questions related to the document and doc_id."
+            description="Query documents based on questions related to the document and doc_id.",
+            partial_params={"document_id": input.document_id},
         )
-
-        load_chats = FunctionTool.from_defaults(
-            async_fn=load_chat_history,
-            name="load_chat_history",
-            description="Use this tool to view the context of previous conversations."
+        
+        load_conversation_history = FunctionTool.from_defaults(
+            async_fn=load_conversation_history,
+            name="load_conversation_history",
+            description="Use this tool when you need the previous conversation context"
         )
 
         prompt = f"""You are an AI assistant specialized in legal documents.
-        You have two tools:
-        1. `query_documents` that accepts `message` and `document_id`
-        2. `load_chat_history` that retrieves previous conversation context
 
         IMPORTANT RULES:
-        - ALWAYS call `load_chat_history` BEFORE answering any question to get full conversation context.
+        - Always use the tool `load_conversation_history` before answering question to understand the context.
         - ONLY call `query_documents` if the user's question explicitly asks for information from a specific document.
         - If the user asks about your behavior, asks you to not use tools, or says anything unrelated to document content, respond directly WITHOUT calling `query_documents`.
         - When you do call `query_documents`, use the document_id provided in the user's message (extract it from the text).
@@ -520,17 +520,23 @@ async def query(
 
         Current document_id in context: {input.document_id}
         """
-
-        agent = ReActAgent(tools=[query_documents, load_chats], llm=llm, verbose=True, system_prompt=prompt)
-
-        result = await agent.run(input.message)
+        
+        agent = FunctionAgent(
+            tools=[query_documents, load_conversation_history],
+            llm=llm,
+            system_prompt=prompt,
+            streaming=False,
+            verbose=True
+        )
+        
+        response = await agent.run(input.message)
 
         # ---------- Insert the ai answer into the database and commit ----------
-        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=result.response.blocks[0].text)
+        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(response))
         db.add(assistant_chat_message)
         await db.commit()
 
-        return jsonable_encoder(result)
+        return {"response": str(response)}
     except Exception as e:
         await db.rollback()
         raise e
