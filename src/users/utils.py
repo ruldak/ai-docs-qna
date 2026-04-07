@@ -2,6 +2,7 @@ from pwdlib import PasswordHash
 import os
 from dotenv import load_dotenv
 from . import constants
+from datetime import timedelta
 
 load_dotenv()
 
@@ -19,8 +20,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 from fastapi_jwt import JwtAuthorizationCredentials, JwtAccessBearer, JwtRefreshBearer
 
 secret_key = os.getenv("SECRET_KEY")
-access_security = JwtAccessBearer(secret_key=secret_key, auto_error=True)
-refresh_security = JwtRefreshBearer(secret_key=secret_key, auto_error=True)
+access_security = JwtAccessBearer(secret_key=secret_key, auto_error=True, access_expires_delta=timedelta(minutes=60))
+refresh_security = JwtRefreshBearer(secret_key=secret_key, auto_error=True, refresh_expires_delta=timedelta(days=7))
 
 # ---------- ReActAgent tools ----------
 from llama_index.core import Settings, VectorStoreIndex
@@ -33,9 +34,9 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.llms.groq import Groq
 from llama_index.core.vector_stores import MetadataFilter, MetadataFilters, FilterOperator
 from . import models
+from sqlalchemy import select
 
 class QueryTools:
-    """docstring for ClassName"""
     def __init__(self):
         self.api_key = os.getenv("API_KEY")
         self.tenant = os.getenv("TENANT")
@@ -44,8 +45,8 @@ class QueryTools:
         self.huggingface_api_key = os.getenv("HUGGING_FACE_API_KEY")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
 
-    def llm(self):
-        return Groq(model="llama-3.3-70b-versatile", temperature=0.2, api_key=self.groq_api_key)
+    def llm(self, temperature):
+        return Groq(model="openai/gpt-oss-120b", temperature=temperature, api_key=self.groq_api_key)
 
     def client(self):
         return chromadb.CloudClient(
@@ -57,7 +58,7 @@ class QueryTools:
     async def query_documents(self, message: str, document_id: int):
         """Answer questions based on specific documents."""
         client = self.client()
-        Settings.llm = self.llm()
+        Settings.llm = self.llm(0.2)
 
         embed_model = HuggingFaceInferenceAPIEmbedding(
             model_name="intfloat/multilingual-e5-large",
@@ -74,7 +75,7 @@ class QueryTools:
             ]
         )
 
-        query_engine = index.as_query_engine(filters=filters, similarity_top_k=2, response_mode="tree_summarize")
+        query_engine = index.as_query_engine(filters=filters, similarity_top_k=2)
 
         response = await query_engine.aquery(message)
 
