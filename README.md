@@ -7,3 +7,6 @@
 
 
 `Built with FastAPI Utilities CLI Tool`
+
+## run celery task
+celery -A src.tasks.app worker --queues=io_task --pool=threads --loglevel=info
