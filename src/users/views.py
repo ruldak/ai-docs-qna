@@ -29,6 +29,9 @@ from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 from llama_index.core.agent.workflow import FunctionAgent
+from src.tasks import insert_to_vector, app
+from celery.result import AsyncResult
+from typing import List
 
 load_dotenv()
 
@@ -84,6 +87,7 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
                 
         raise HTTPException(status_code=400, detail="An error occurred in the data.")
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as e:
         await db.rollback()
@@ -114,7 +118,48 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"error: {e}")
 
 
-@router.get("/documents", status_code=200)
+@router.get("/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
+async def get_document_by_id(
+        document_id: int,
+        db: AsyncSession = Depends(get_db),
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+    ):
+    try:
+        # ---------- Check token owner ----------
+        get_user = await db.execute(select(models.User.role).where(
+            models.User.id == credentials.subject["user_id"]
+        ))
+
+        user_role = get_user.scalars().first()
+
+        if not user_role:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        get_document = await db.execute(select(models.Document).where(
+            models.Document.id == document_id,
+            models.Document.user_id == credentials.subject["user_id"]
+        ))
+
+        document_instance = get_document.scalars().first()
+
+        if not document_instance:
+            raise HTTPException(status_code=404, detail="Document not found.")
+
+        # Create Signed URL
+        signed_url_res = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).create_signed_url(
+            path=document_instance.file_path,
+            expires_in=3600
+        )
+
+        response_data = document_instance.__dict__
+        response_data["signed_url"] = signed_url_res.get("signedUrl")
+
+        return response_data
+    except Exception as e:
+        raise e
+
+
+@router.get("/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
 async def get_documents(db: AsyncSession = Depends(get_db)):
     try:
         # ---------- Get documents ----------
@@ -125,7 +170,7 @@ async def get_documents(db: AsyncSession = Depends(get_db)):
         if not documents:
             raise HTTPException(status_code=404, detail="No documents found.")
 
-        return {"detail": documents}
+        return documents
     except HTTPException:
         raise
     except Exception as e:
@@ -151,8 +196,8 @@ async def update_document(
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        if user_role != "admin":
-            raise HTTPException(status_code=403, detail="Forbidden")
+        # if user_role != "admin":
+        #     raise HTTPException(status_code=403, detail="Forbidden")
 
         # ---------- Check if all fields are empty ----------
         if not title and not description and not file:
@@ -255,7 +300,6 @@ async def update_document(
         return {"message": "Successfully updated."}
     except Exception as e:
         raise e
-    
 
 @router.post("/documents", status_code=201)
 async def post_document(
@@ -263,12 +307,13 @@ async def post_document(
         description: str = Form(...),
         file: UploadFile = File(...),
         db: AsyncSession = Depends(get_db),
-        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+#         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
+        user_id = credentials.subject["user_id"]
         # ---------- Check token owner ----------
         get_user = await db.execute(select(models.User.role).where(
-            models.User.id == credentials.subject["user_id"]
+            models.User.id == user_id
         ))
 
         user_role = get_user.scalars().first()
@@ -276,8 +321,8 @@ async def post_document(
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        if user_role != "admin":
-            raise HTTPException(status_code=403, detail="Forbidden")
+        # if user_role != "admin":
+        #     raise HTTPException(status_code=403, detail="Forbidden")
 
         # ---------- Check if the title is already in use ----------
         get_document = await db.execute(select(models.Document.title).where(
@@ -299,10 +344,9 @@ async def post_document(
 
 
         # ---------- Insert the file's informations into the database ----------
-        document_instance = models.Document(title=title, description=description, chunk_count=0)
+        document_instance = models.Document(title=title, description=description, chunk_count=0, user_id=user_id)
         db.add(document_instance)
-        await db.flush()
-
+        await db.commit()
 
         # ---------- Read and insert file into the vector store ----------
         content = await file.read()
@@ -324,46 +368,30 @@ async def post_document(
         elif file.content_type == "text/plain":
             text = content.decode("utf-8")
 
-        docs = [
-            Document(
-                text=text,
-                metadata={
-                    "title": title,
-                    "description": description,
-                    "filename": file.filename,
-                    "id": document_instance.id
-                }
-            ),
-        ]
-
-        client = chromadb.CloudClient(
-            api_key=os.getenv("API_KEY"),
-            tenant=os.getenv("TENANT"),
-            database='fastapi_qna_legal_documents'
+        task = insert_to_vector.delay(
+            contents=content,
+            text=text,
+            filename=file.filename,
+            document_id=document_instance.id,
+            title=title,
+            description=description,
+            content_type=file.content_type
         )
 
-        collection = client.get_or_create_collection("legal_documents")
-        vstore = ChromaVectorStore(chroma_collection=collection)
+        print("======== TASK ========")
+        print(task)
+        print("======================")
 
-        embed_model = HuggingFaceInferenceAPIEmbedding(
-            model_name="intfloat/multilingual-e5-large",
-            token=os.getenv("HUGGING_FACE_API_KEY")
-        )
+        response_data = {
+            "id": document_instance.id,
+            "title": document_instance.title,
+            "description": document_instance.description,
+            "chunk_count": document_instance.chunk_count,
+            "user_id": document_instance.user_id,
+            "task_id": task.id
+        }
 
-        pipeline = IngestionPipeline(
-            transformations=[
-                SentenceSplitter(chunk_size=512),
-                embed_model
-            ],
-            vector_store=vstore
-        )
-
-        nodes = await pipeline.arun(documents=docs)
-
-        document_instance.chunk_count = len(nodes)
-        await db.commit()
-
-        return document_instance
+        return response_data
     except IntegrityError as e:
         await db.rollback()
 
@@ -384,7 +412,7 @@ async def post_document(
 async def delete_document(
         document_id: int,
         db: AsyncSession = Depends(get_db),
-        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+        # credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
         # ---------- Check token owner ----------
@@ -397,8 +425,8 @@ async def delete_document(
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        if user_role != "admin":
-            raise HTTPException(status_code=403, detail="Forbidden")
+        # if user_role != "admin":
+        #     raise HTTPException(status_code=403, detail="Forbidden")
 
         # ---------- Get the document ----------
         get_document = await db.execute(select(models.Document).where(
@@ -634,3 +662,22 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
     except HTTPException as e:
         await db.rollback()
         raise e
+
+@router.get("/task/{task_id}")
+async def get_task_status(task_id: str):
+    result = AsyncResult(task_id, app=app)
+    
+    response = {
+        "task_id": task_id,
+        "status": result.state,
+        "ready": result.ready(),
+    }
+    
+    if result.state == "SUCCESS":
+        response["result"] = "Task completed"
+    elif result.state == "FAILURE":
+        response["error"] = "An error occurred while processing the document. Please try again."  
+    elif result.state == "PENDING":
+        response["message"] = "Task has not been processed or not found."
+    
+    return response
