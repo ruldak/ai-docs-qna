@@ -9,3 +9,4 @@ db_host = os.getenv("DB_HOST")
 db_name = os.getenv("DB_NAME")
 
 DATABASE_URL = f"postgresql+asyncpg://{db_user}:{db_password}@{db_host}/{db_name}"
+TASKS_DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}/{db_name}"
