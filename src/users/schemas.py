@@ -41,6 +41,25 @@ class Document(DocumentBase):
 
     class Config:
         from_attributes = True
+class DocumentResponseList(DocumentBase):
+    id: int
+    user_id: int
+    description: Optional[str] = None
+    chunk_count: int
+    indexed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DocumentResponse(DocumentBase):
+    id: int
+    user_id: int
+    description: Optional[str] = None
+    signed_url: str
+    chunk_count: int
+
+    class Config:
+        from_attributes = True
 
 # ---------- Query Schemas ----------
 class Query(BaseModel):
