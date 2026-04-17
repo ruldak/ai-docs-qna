@@ -45,6 +45,7 @@ class DocumentResponseList(DocumentBase):
     id: int
     user_id: int
     description: Optional[str] = None
+    status: str
     chunk_count: int
     indexed_at: datetime
 
@@ -55,6 +56,7 @@ class DocumentResponse(DocumentBase):
     id: int
     user_id: int
     description: Optional[str] = None
+    status: str
     signed_url: str
     chunk_count: int
 
