@@ -118,21 +118,51 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"error: {e}")
 
 
-@router.get("/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
+@router.get("/users/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
+async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+    try:
+        # ---------- Check token's owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == credentials.subject["user_id"]
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- Get documents ----------
+        get_documents = await db.execute(select(models.Document).where(
+            models.Document.user_id == credentials.subject["user_id"]
+        ))
+
+        documents = get_documents.scalars().all()
+
+        if not documents:
+            raise HTTPException(status_code=404, detail="No documents found.")
+
+        return documents
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise e
+
+
+@router.get("/users/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
 async def get_document_by_id(
         document_id: int,
         db: AsyncSession = Depends(get_db),
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        # ---------- Check token owner ----------
-        get_user = await db.execute(select(models.User.role).where(
+        # ---------- Check token's owner ----------
+        get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
         ))
 
-        user_role = get_user.scalars().first()
+        user = get_user.scalars().first()
 
-        if not user_role:
+        if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
         get_document = await db.execute(select(models.Document).where(
@@ -145,15 +175,17 @@ async def get_document_by_id(
         if not document_instance:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-        # Create Signed URL
-        signed_url_res = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).create_signed_url(
-            path=document_instance.file_path,
-            expires_in=3600
-        )
-
         response_data = document_instance.__dict__
-        response_data["signed_url"] = signed_url_res.get("signedUrl")
 
+        if document_instance.file_path:
+            # Create Signed URL
+            signed_url_res = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).create_signed_url(
+                path=document_instance.file_path,
+                expires_in=3600
+            )
+
+            response_data["signed_url"] = signed_url_res.get("signedUrl")
+        
         return response_data
     except Exception as e:
         raise e
@@ -186,18 +218,15 @@ async def update_document(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        # ---------- Check token owner ----------
-        get_user = await db.execute(select(models.User.role).where(
+        # ---------- Check token's owner ----------
+        get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
         ))
 
-        user_role = get_user.scalars().first()
+        user = get_user.scalars().first()
 
-        if not user_role:
+        if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-
-        # if user_role != "admin":
-        #     raise HTTPException(status_code=403, detail="Forbidden")
 
         # ---------- Check if all fields are empty ----------
         if not title and not description and not file:
@@ -225,16 +254,25 @@ async def update_document(
 
             # ---------- retrieve the document based on the given ID ----------
             get_document = await db.execute(select(models.Document).where(
-                models.Document.id == document_id
+                models.Document.id == document_id,
+                models.Document.user_id == credentials.subject["user_id"]
             ))
 
             document = get_document.scalars().first()
+
+            # ---------- check if the document exist ----------
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
 
             # ---------- delete existing document nodes ----------
             await asyncio.to_thread(
                 vstore._collection.delete,
                 where={"id": document_id}
             )
+
+            if document.file_path:
+                # ---------- delete the document from the supabase storage -----------
+                storage_response = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document.file_path])
 
             # ---------- Read and insert file into the vector store ----------
             content = await file.read()
@@ -249,41 +287,22 @@ async def update_document(
                 text = "\n".join(texts)
             
             elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                # EN: wrap the read binary data with BytesIO so that it can be read() again because docx2txt.process() needs it.
-                # ID: bungkus data biner yang telah dibaca dengan BytesIO supaya bisa di read() ulang karena docx2txt.process() butuh itu.
+                # EN: wrap the read binary data with BytesIO() so that it can be read() again because docx2txt.process() needs it.
+                # ID: bungkus data biner yang telah dibaca dengan BytesIO() supaya bisa di read() ulang karena docx2txt.process() butuh itu.
                 file_like = io.BytesIO(content)
                 text = docx2txt.process(file_like)
             elif file.content_type == "text/plain":
                 text = content.decode("utf-8")
 
-            docs = [
-                Document(
-                    text=text,
-                    metadata={
-                        "title": document.title,
-                        "description": document.description,
-                        "filename": file.filename,
-                        "id": document_id
-                    }
-                ),
-            ]
-
-            embed_model = HuggingFaceInferenceAPIEmbedding(
-                model_name="intfloat/multilingual-e5-large",
-                token=os.getenv("HUGGING_FACE_API_KEY"),
-                timeout=500
+            task = insert_to_vector.delay(
+                contents=content,
+                text=text,
+                filename=file.filename,
+                document_id=document_id,
+                title=document.title,
+                description=document.description,
+                content_type=file.content_type
             )
-
-            pipeline = IngestionPipeline(
-                transformations=[
-                    SentenceSplitter(chunk_size=512),
-                    embed_model
-                ],
-                vector_store=vstore
-            )
-
-            nodes = await pipeline.arun(documents=docs)
-            new_values["chunk_count"] = len(nodes)
             new_values["indexed_at"] = datetime.now(timezone.utc)
 
         if title:
@@ -297,7 +316,7 @@ async def update_document(
             await db.execute(stmt)
             await db.commit()
 
-        return {"message": "Successfully updated."}
+        return {"message": "Successfully updated.", "task_id": task.id}
     except Exception as e:
         raise e
 
@@ -307,11 +326,11 @@ async def post_document(
         description: str = Form(...),
         file: UploadFile = File(...),
         db: AsyncSession = Depends(get_db),
-#         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
         user_id = credentials.subject["user_id"]
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User.role).where(
             models.User.id == user_id
         ))
@@ -378,10 +397,6 @@ async def post_document(
             content_type=file.content_type
         )
 
-        print("======== TASK ========")
-        print(task)
-        print("======================")
-
         response_data = {
             "id": document_instance.id,
             "title": document_instance.title,
@@ -412,10 +427,10 @@ async def post_document(
 async def delete_document(
         document_id: int,
         db: AsyncSession = Depends(get_db),
-        # credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User.role).where(
             models.User.id == credentials.subject["user_id"]
         ))
@@ -425,12 +440,10 @@ async def delete_document(
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # if user_role != "admin":
-        #     raise HTTPException(status_code=403, detail="Forbidden")
-
         # ---------- Get the document ----------
         get_document = await db.execute(select(models.Document).where(
-            models.Document.id == document_id
+            models.Document.id == document_id,
+            models.Document.user_id == credentials.subject["user_id"]
         ))
 
         document_exist = get_document.scalars().first()
@@ -445,7 +458,11 @@ async def delete_document(
         )
 
         collection = client.get_or_create_collection("legal_documents")
+        # delete the document from the vector database
         collection.delete(where={"id": document_id})
+
+        # delete the document from the supabase storage
+        storage_response = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document_exist.file_path])
         
         await db.delete(document_exist)
         await db.commit()
@@ -468,7 +485,7 @@ async def query(
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -577,7 +594,7 @@ async def get_chat_history(
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -607,7 +624,7 @@ async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthor
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -640,7 +657,7 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token owner ----------
+        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
