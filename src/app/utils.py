@@ -38,9 +38,6 @@ from sqlalchemy import select
 
 class QueryTools:
     def __init__(self):
-        self.api_key = os.getenv("API_KEY")
-        self.tenant = os.getenv("TENANT")
-        self.database = os.getenv("VECTOR_DATABASE_NAME")
         self.huggingface_api_key = os.getenv("HUGGING_FACE_API_KEY")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
 
@@ -48,11 +45,7 @@ class QueryTools:
         return Groq(model="openai/gpt-oss-120b", temperature=temperature, api_key=self.groq_api_key)
 
     def client(self):
-        return chromadb.CloudClient(
-            api_key=self.api_key,
-            tenant=self.tenant,
-            database=self.database
-        )
+        return chromadb.PersistentClient(path="./chroma_db")
 
     async def query_documents(self, message: str, document_id: int):
         """Answer questions based on specific documents."""
@@ -64,7 +57,7 @@ class QueryTools:
             token=self.huggingface_api_key
         )
 
-        collection = client.get_or_create_collection("legal_documents")
+        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
         vstore = ChromaVectorStore(chroma_collection=collection)
         index = VectorStoreIndex.from_vector_store(vstore, embed_model=embed_model)
 

@@ -48,17 +48,13 @@ def insert_to_vector(self, contents, text, filename, document_id, title, descrip
             file_options={"content-type": content_type, "x-upsert": "true"}
         )
 
-        client = chromadb.CloudClient(
-            api_key=os.getenv("API_KEY"),
-            tenant=os.getenv("TENANT"),
-            database='fastapi_qna_legal_documents'
-        )
+        client = chromadb.PersistentClient(path="./chroma_db")
 
-        collection = client.get_or_create_collection("legal_documents")
+        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
         vstore = ChromaVectorStore(chroma_collection=collection)
 
         embed_model = HuggingFaceInferenceAPIEmbedding(
-            model_name="BAAI/bge-m3",
+            model_name="intfloat/multilingual-e5-large",
             token=os.getenv("HUGGING_FACE_API_KEY"),
             http_client=client
         )
