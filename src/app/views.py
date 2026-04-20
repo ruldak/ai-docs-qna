@@ -29,7 +29,7 @@ from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 from llama_index.core.agent.workflow import FunctionAgent
-from src.tasks import insert_to_vector, app
+from src.tasks import insert_to_vector, celery_task
 from celery.result import AsyncResult
 from typing import List
 
@@ -91,7 +91,7 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/users/login", response_model=schemas.LoginResponse)
 async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
@@ -115,7 +115,7 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @router.get("/users/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
@@ -145,7 +145,7 @@ async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuth
     except HTTPException:
         raise
     except Exception as e:
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @router.get("/users/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
@@ -188,7 +188,7 @@ async def get_document_by_id(
         
         return response_data
     except Exception as e:
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @router.get("/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
@@ -206,7 +206,7 @@ async def get_documents(db: AsyncSession = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.put("/documents/{document_id}", status_code=200)
 async def update_document(
@@ -238,10 +238,10 @@ async def update_document(
             client = chromadb.CloudClient(
                 api_key=os.getenv("API_KEY"),
                 tenant=os.getenv("TENANT"),
-                database='fastapi_qna_legal_documents'
+                database=os.getenv("VECTOR_DATABASE_NAME")
             )
 
-            collection = client.get_or_create_collection("legal_documents")
+            collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
             vstore = ChromaVectorStore(chroma_collection=collection)
 
             # ---------- make sure the file type is supported ----------
@@ -318,7 +318,7 @@ async def update_document(
 
         return {"message": "Successfully updated.", "task_id": task.id}
     except Exception as e:
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/documents", status_code=201)
 async def post_document(
@@ -339,9 +339,6 @@ async def post_document(
 
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-
-        # if user_role != "admin":
-        #     raise HTTPException(status_code=403, detail="Forbidden")
 
         # ---------- Check if the title is already in use ----------
         get_document = await db.execute(select(models.Document.title).where(
@@ -421,7 +418,7 @@ async def post_document(
         raise
     except Exception as e:
         await db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
@@ -473,7 +470,7 @@ async def delete_document(
         raise e
     except Exception as e:
         await db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/c/{chat_session_id}", status_code=200)
 async def query(
@@ -584,7 +581,7 @@ async def query(
         return {"response": str(response)}
     except Exception as e:
         await db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.get("/c/history/{session_id}", status_code=200)
 async def get_chat_history(
@@ -617,7 +614,7 @@ async def get_chat_history(
         
         return messages
     except Exception as e:
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.get("/sessions", status_code=200)
 async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
@@ -647,7 +644,7 @@ async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthor
         return chat_sessions
     except Exception as e:
         await db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     except HTTPException as e:
         await db.rollback()
         raise e
@@ -675,26 +672,29 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
         return chat_session
     except Exception as e:
         await db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     except HTTPException as e:
         await db.rollback()
         raise e
 
 @router.get("/task/{task_id}")
 async def get_task_status(task_id: str):
-    result = AsyncResult(task_id, app=app)
+    try:
+        result = AsyncResult(task_id, app=app)
     
-    response = {
-        "task_id": task_id,
-        "status": result.state,
-        "ready": result.ready(),
-    }
-    
-    if result.state == "SUCCESS":
-        response["result"] = "Task completed"
-    elif result.state == "FAILURE":
-        response["error"] = "An error occurred while processing the document. Please try again."  
-    elif result.state == "PENDING":
-        response["message"] = "Task has not been processed or not found."
-    
-    return response
+        response = {
+            "task_id": task_id,
+            "status": result.state,
+            "ready": result.ready(),
+        }
+        
+        if result.state == "SUCCESS":
+            response["result"] = "Task completed"
+        elif result.state == "FAILURE":
+            response["error"] = "An error occurred while processing the document. Please try again."  
+        elif result.state == "PENDING":
+            response["message"] = "Task has not been processed or not found."
+        
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal Server Error")

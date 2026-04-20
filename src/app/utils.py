@@ -40,8 +40,7 @@ class QueryTools:
     def __init__(self):
         self.api_key = os.getenv("API_KEY")
         self.tenant = os.getenv("TENANT")
-        self.database = "fastapi_qna_legal_documents"
-        self.open_router_api_key = os.getenv("OPEN_ROUTER_API_KEY")
+        self.database = os.getenv("VECTOR_DATABASE_NAME")
         self.huggingface_api_key = os.getenv("HUGGING_FACE_API_KEY")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
 

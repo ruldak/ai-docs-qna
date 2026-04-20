@@ -3,7 +3,7 @@ from fastapi.encoders import jsonable_encoder
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 from src.tasks_database import SessionLocal
-from src.users import models
+from src.app import models
 from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 from llama_index.core import Document
 import httpx
-from .users import utils
+from .app import utils
 
 custom_timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=10.0)
 custom_limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
@@ -23,13 +23,13 @@ client = httpx.Client(timeout=custom_timeout, limits=custom_limits, transport=tr
 
 load_dotenv()
 
-app = Celery(
+celery_task = Celery(
     'tasks',
-    broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/0'
+    broker=os.getenv("CELERY_BROKER_URL"),
+    backend=os.getenv("CELERY_BACKEND_URL")
 )
 
-@app.task(bind=True, max_retries=3, default_retry_delay=30, queue="io_task")
+@celery_task.task(bind=True, max_retries=3, default_retry_delay=30, queue="io_task")
 def insert_to_vector(self, contents, text, filename, document_id, title, description, content_type):
     """Sebuah tugas untuk memasukan document ke vector database."""
     print("Menjalankan tugas: memasukan document ke vector database")
