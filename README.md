@@ -96,7 +96,7 @@ Sebelum memulai, pastikan Anda memiliki:
 3. **Jalankan Celery Worker**:
    Buka terminal baru dan jalankan:
    ```bash
-   celery -A src.tasks.app worker --queues=io_task --pool=threads --loglevel=info
+   celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --loglevel=info
    ```
 
 ## 🛠️ Pengembangan
