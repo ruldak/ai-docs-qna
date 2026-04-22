@@ -1,25 +1,10 @@
 from celery import Celery
-from fastapi.encoders import jsonable_encoder
-from llama_index.core.ingestion import IngestionPipeline
-from llama_index.core.node_parser import SentenceSplitter
 from src.tasks_database import SessionLocal
 from src.app import models
-from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
-from llama_index.vector_stores.chroma import ChromaVectorStore
-import chromadb
 import os
 from dotenv import load_dotenv
-from llama_index.core import Document
-import httpx
 from .app import utils
-
-custom_timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=10.0)
-custom_limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-
-
-transport = httpx.HTTPTransport(retries=3)
-
-client = httpx.Client(timeout=custom_timeout, limits=custom_limits, transport=transport)
+from .app.rag import get_index
 
 load_dotenv()
 
@@ -30,9 +15,9 @@ celery_task = Celery(
 )
 
 @celery_task.task(bind=True, max_retries=3, default_retry_delay=30, queue="io_task")
-def insert_to_vector(self, contents, text, filename, document_id, title, description, content_type):
+def insert_to_vector(self, contents: str, filename: str, document_id: int, title: str, description: str, content_type: str):
     """Sebuah tugas untuk memasukan document ke vector database."""
-    print("Menjalankan tugas: memasukan document ke vector database")
+    print("Menjalankan tugas: upload dokumen ke supabase")
     
     db = SessionLocal()
 
@@ -48,49 +33,12 @@ def insert_to_vector(self, contents, text, filename, document_id, title, descrip
             file_options={"content-type": content_type, "x-upsert": "true"}
         )
 
-        client = chromadb.PersistentClient(path="./chroma_db")
-
-        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
-        vstore = ChromaVectorStore(chroma_collection=collection)
-
-        embed_model = HuggingFaceInferenceAPIEmbedding(
-            model_name="intfloat/multilingual-e5-large",
-            token=os.getenv("HUGGING_FACE_API_KEY"),
-            http_client=client
-        )
-
-        docs = [
-            Document(
-                text=text,
-                metadata={
-                    "title": title,
-                    "description": description,
-                    "filename": filename,
-                    "id": document_id
-                }
-            ),
-        ]
-        
-        pipeline = IngestionPipeline(
-            transformations=[
-                SentenceSplitter(chunk_size=512),
-                embed_model
-            ],
-            vector_store=vstore
-        )
-
         record = db.query(models.Document).filter_by(id=document_id).first()
         if not record:
             record = models.Document(title=title, description=description, chunk_count=0, status="PENDING")
             db.add(record)
     
-        # Insert into chroma
-        print(f"Start embedding, text length: {len(text)} characters")
-        nodes = pipeline.run(documents=docs)
-        print(f"Embedding finish, total nodes: {len(nodes)}")
-        
         record.status = "SUCCESS"
-        record.chunk_count = len(nodes)
         record.file_path = res.path
         db.commit()
     except Exception as exc:

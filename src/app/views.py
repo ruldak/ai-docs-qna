@@ -32,11 +32,13 @@ from llama_index.core.agent.workflow import FunctionAgent
 from src.tasks import insert_to_vector, celery_task
 from celery.result import AsyncResult
 from typing import List
+from llama_index.core import StorageContext
+from llama_index.core import VectorStoreIndex
+from .rag import get_index
 
 load_dotenv()
 
 router = APIRouter(prefix="/api")
-query_tools = utils.QueryTools()
 
 @router.get("/users/me", response_model=schemas.User, status_code=200)
 async def users(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
@@ -187,6 +189,8 @@ async def get_document_by_id(
             response_data["signed_url"] = signed_url_res.get("signedUrl")
         
         return response_data
+    except HTTPException as e:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
@@ -234,12 +238,10 @@ async def update_document(
 
         new_values = {}
 
+        task = None
+
         if file:
-            client = chromadb.CloudClient(
-                api_key=os.getenv("API_KEY"),
-                tenant=os.getenv("TENANT"),
-                database=os.getenv("VECTOR_DATABASE_NAME")
-            )
+            client = chromadb.PersistentClient(path="./chroma_db")
 
             collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
             vstore = ChromaVectorStore(chroma_collection=collection)
@@ -263,12 +265,6 @@ async def update_document(
             # ---------- check if the document exist ----------
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
-
-            # ---------- delete existing document nodes ----------
-            await asyncio.to_thread(
-                vstore._collection.delete,
-                where={"id": document_id}
-            )
 
             if document.file_path:
                 # ---------- delete the document from the supabase storage -----------
@@ -294,13 +290,25 @@ async def update_document(
             elif file.content_type == "text/plain":
                 text = content.decode("utf-8")
 
+            docs = Document(
+                text=text,
+                metadata={
+                    "filename": file.filename,
+                    "id": document_id
+                },
+                doc_id=str(document_id)
+            )
+
+            index = get_index()
+            await asyncio.to_thread(index.delete_ref_doc, str(document_id), delete_from_store=True)
+            await asyncio.to_thread(index.insert, docs)
+
             task = insert_to_vector.delay(
                 contents=content,
-                text=text,
                 filename=file.filename,
-                document_id=document_id,
                 title=document.title,
                 description=document.description,
+                document_id=document_id,
                 content_type=file.content_type
             )
             new_values["indexed_at"] = datetime.now(timezone.utc)
@@ -316,8 +324,19 @@ async def update_document(
             await db.execute(stmt)
             await db.commit()
 
-        return {"message": "Successfully updated.", "task_id": task.id}
+        response_data = {"message": "Successfully updated."}
+        
+        if task:
+            response_data["task_id"] = task.id
+        
+        return response_data
+    except HTTPException as e:
+        await db.rollback()
+        raise
     except Exception as e:
+        print("======== ERROR =========")
+        print(f"error update document: {e}")
+        print("========================")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/documents", status_code=201)
@@ -384,13 +403,24 @@ async def post_document(
         elif file.content_type == "text/plain":
             text = content.decode("utf-8")
 
+        docs = Document(
+            text=text,
+            metadata={
+                "filename": file.filename,
+                "id": document_instance.id
+            },
+            doc_id=str(document_instance.id)
+        )
+
+        index = get_index()
+        await asyncio.to_thread(index.insert, docs)
+
         task = insert_to_vector.delay(
             contents=content,
-            text=text,
             filename=file.filename,
-            document_id=document_instance.id,
             title=title,
             description=description,
+            document_id=document_instance.id,
             content_type=file.content_type
         )
 
@@ -417,6 +447,9 @@ async def post_document(
         await db.rollback()
         raise
     except Exception as e:
+        print("======== ERROR =========")
+        print(f"error post document: {e}")
+        print("========================")
         await db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
@@ -448,15 +481,15 @@ async def delete_document(
         if not document_exist:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-        client = chromadb.CloudClient(
-            api_key=os.getenv("API_KEY"),
-            tenant=os.getenv("TENANT"),
-            database='fastapi_qna_legal_documents'
-        )
+        client = chromadb.PersistentClient(path="./chroma_db")
 
-        collection = client.get_or_create_collection("legal_documents")
+        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
+        vstore = ChromaVectorStore(chroma_collection=collection)
+
+        index = get_index()
+        
         # delete the document from the vector database
-        collection.delete(where={"id": document_id})
+        index.delete_ref_doc(str(document_id), delete_from_store=True)
 
         # delete the document from the supabase storage
         storage_response = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document_exist.file_path])
@@ -467,7 +500,7 @@ async def delete_document(
         return {"detail": "Deleted Successfully."}
     except HTTPException as e:
         await db.rollback()
-        raise e
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -480,6 +513,7 @@ async def query(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
+        query_tools = utils.QueryTools()
         user_id = credentials.subject["user_id"]
 
         # ---------- Check token's owner ----------
@@ -539,7 +573,7 @@ async def query(
         llm = query_tools.llm(0.6)
 
         query_documents = FunctionTool.from_defaults(
-            fn=query_tools.query_documents,
+            async_fn=query_tools.query_documents,
             name="query_documents",
             description="Query documents based on questions related to the document and doc_id.",
             partial_params={"document_id": input.document_id},
@@ -551,10 +585,10 @@ async def query(
             description="Use this tool when you need the previous conversation context"
         )
 
-        prompt = f"""You are an AI assistant specialized in legal documents.
+        prompt = f"""You are an AI assistant specialized in document analysis.
 
         IMPORTANT RULES:
-        - Always use the tool `load_conversation_history` before answering question to understand the context.
+        - Always use the tool `load_conversation_history` before answering questions to understand the context.
         - ONLY call `query_documents` if the user's question explicitly asks for information from a specific document.
         - If the user asks about your behavior, asks you to not use tools, or says anything unrelated to document content, respond directly WITHOUT calling `query_documents`.
         - When you do call `query_documents`, use the document_id provided in the user's message (extract it from the text).
@@ -579,13 +613,20 @@ async def query(
         await db.commit()
 
         return {"response": str(response)}
+    except HTTPException as e:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
+        print("========= ERROR =========")
+        print(f"error: {e}")
+        print("=========================")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.get("/c/history/{session_id}", status_code=200)
 async def get_chat_history(
-        session_id: int, db: AsyncSession = Depends(get_db),
+        session_id: int,
+        db: AsyncSession = Depends(get_db),
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
@@ -610,13 +651,16 @@ async def get_chat_history(
         messages = get_messages.scalars().all()
 
         if not messages:
-            raise HTTPException(status_code=404, detail="Session's message not found.")
+            raise HTTPException(status_code=404, detail="No message found.")
         
         return messages
+    except HTTPException as e:
+        await db.rollback()
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@router.get("/sessions", status_code=200)
+@router.get("/users/sessions", status_code=200)
 async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
     try:
         user_id = credentials.subject["user_id"]
@@ -680,7 +724,7 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
 @router.get("/task/{task_id}")
 async def get_task_status(task_id: str):
     try:
-        result = AsyncResult(task_id, app=app)
+        result = AsyncResult(task_id, app=celery_task)
     
         response = {
             "task_id": task_id,

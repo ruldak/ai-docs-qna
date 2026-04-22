@@ -23,7 +23,7 @@ secret_key = os.getenv("SECRET_KEY")
 access_security = JwtAccessBearer(secret_key=secret_key, auto_error=True, access_expires_delta=timedelta(minutes=60))
 refresh_security = JwtRefreshBearer(secret_key=secret_key, auto_error=True, refresh_expires_delta=timedelta(days=7))
 
-# ---------- ReActAgent tools ----------
+# ---------- tools ----------
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
 from llama_index.core.tools import QueryEngineTool
@@ -33,45 +33,30 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.llms.groq import Groq
 from llama_index.core.vector_stores import MetadataFilter, MetadataFilters, FilterOperator
+from llama_index.core import StorageContext
 from . import models
 from sqlalchemy import select
+from .rag import get_index
 
 class QueryTools:
-    def __init__(self):
-        self.huggingface_api_key = os.getenv("HUGGING_FACE_API_KEY")
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-
     def llm(self, temperature):
-        return Groq(model="openai/gpt-oss-120b", temperature=temperature, api_key=self.groq_api_key)
-
-    def client(self):
-        return chromadb.PersistentClient(path="./chroma_db")
+        return Groq(model="openai/gpt-oss-120b", temperature=temperature, api_key=os.getenv("GROQ_API_KEY"))
 
     async def query_documents(self, message: str, document_id: int):
         """Answer questions based on specific documents."""
-        client = self.client()
-        Settings.llm = self.llm(0.2)
-
-        embed_model = HuggingFaceInferenceAPIEmbedding(
-            model_name="intfloat/multilingual-e5-large",
-            token=self.huggingface_api_key
-        )
-
-        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
-        vstore = ChromaVectorStore(chroma_collection=collection)
-        index = VectorStoreIndex.from_vector_store(vstore, embed_model=embed_model)
+        index = get_index()
 
         filters = MetadataFilters(
             filters=[
-                MetadataFilter(key="id", value=document_id, operator=FilterOperator.EQ)
+                ExactMatchFilter(key="doc_id", value=str(document_id))
             ]
         )
 
-        query_engine = index.as_query_engine(filters=filters, similarity_top_k=2)
+        retriever = index.as_retriever(filters=filters, similarity_top_k=2)
 
-        response = await query_engine.aquery(message)
+        nodes = await retriever.aretrieve(message)
 
-        return response
+        return nodes
 
 # ----------------- Supabase Configuration --------------------
 from supabase import create_client, Client
