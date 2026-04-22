@@ -48,6 +48,7 @@ class DocumentResponseList(DocumentBase):
     status: str
     chunk_count: int
     indexed_at: datetime
+    file_path: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -59,6 +60,7 @@ class DocumentResponse(DocumentBase):
     status: str
     signed_url: str
     chunk_count: int
+    file_path: Optional[str] = None
 
     class Config:
         from_attributes = True
