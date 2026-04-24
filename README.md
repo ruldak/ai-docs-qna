@@ -37,8 +37,8 @@ Sebelum memulai, pastikan Anda memiliki:
 
 1. **Clone repository**:
    ```bash
-   git clone <repository-url>
-   cd q&a-dokumen-hukum
+   git clone https://github.com/ruldak/ai-docs-qna.git
+   cd ai-docs-qna
    ```
 
 2. **Buat Virtual Environment**:
