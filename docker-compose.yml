@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Database PostgreSQL
   db:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     container_name: doc_qa_db
     environment:
       POSTGRES_USER: ${DB_USER:-user}
@@ -14,7 +14,7 @@ services:
 
   # Redis untuk Celery Broker
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: doc_qa_redis
 
   # FastAPI Web Application
@@ -45,6 +45,9 @@ services:
       - .:/app
     env_file:
       - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
       - DATABASE_URL=postgresql+asyncpg://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-dbname}
       - CELERY_BROKER_URL=redis://redis:6379/0

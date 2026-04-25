@@ -33,8 +33,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.drop_index(op.f('chatstore:idx_key'), table_name='chatstore')
-    op.drop_table('chatstore')
+    op.drop_index(op.f('chatstore:idx_key'), table_name='chatstore', if_exists=True)
+    op.drop_table('chatstore', if_exists=True)
     # ### end Alembic commands ###
 
 
