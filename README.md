@@ -82,25 +82,29 @@ Sebelum memulai, pastikan Anda memiliki:
 
 ## 🏃‍♂️ Menjalankan Aplikasi
 
-1. **Jalankan Migrasi Database**:
+1. **Konfigurasi URL Database Alembic**
+
+   Buka file `alembic.ini`, lalu ubah bagian berikut sesuai database Anda:
+
+   ```ini
+   sqlalchemy.url = postgresql://user:password@localhost/dbname
+   ```
+
+2. **Jalankan Migrasi Database**:
    ```bash
    alembic upgrade head
    ```
 
-2. **Jalankan FastAPI Server**:
+3. **Jalankan FastAPI Server**:
    ```bash
    uvicorn src.main:app --reload
    ```
    Akses dokumentasi API di: `http://localhost:8000/docs`
 
-3. **Jalankan Celery Worker**:
+4. **Jalankan Celery Worker**:
    Buka terminal baru dan jalankan:
    ```bash
    celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --loglevel=info
    ```
-
-## 🛠️ Pengembangan
-Proyek ini dibangun menggunakan **FastAPI Utilities CLI Tool** untuk memastikan struktur kode yang modular dan mudah dipelihara.
-
 ---
 *Status: In Development*
