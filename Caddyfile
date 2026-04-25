@@ -1,5 +1,0 @@
-# Untuk development lokal
-localhost
-
-# Reverse proxy ke service 'web' di port 8000
-reverse_proxy web:8000
