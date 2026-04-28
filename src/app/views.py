@@ -40,8 +40,10 @@ load_dotenv()
 
 router = APIRouter(prefix="/api")
 
-@router.get("/users/me", response_model=schemas.User, status_code=200)
-async def users(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+# --- AUTH ENDPOINTS ---
+
+@router.get("/auth/me", response_model=schemas.User, status_code=200)
+async def get_current_user(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
     try:
         get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
@@ -59,7 +61,7 @@ async def users(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizatio
         print(f"user get error 500: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error.")
 
-@router.post("/users/register", response_model=schemas.User, status_code=201)
+@router.post("/auth/register", response_model=schemas.User, status_code=201)
 async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
     try:
         get_user = await db.execute(select(models.User.email).where(
@@ -95,7 +97,7 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
         await db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@router.post("/users/login", response_model=schemas.LoginResponse)
+@router.post("/auth/login", response_model=schemas.LoginResponse)
 async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     try:
         get_user = await db.execute(select(models.User).where(
@@ -119,8 +121,9 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+# --- DOCUMENT ENDPOINTS ---
 
-@router.get("/users/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
+@router.get("/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
 async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
     try:
         # ---------- Check token's owner ----------
@@ -133,7 +136,7 @@ async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuth
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Get documents ----------
+        # ---------- Get documents belonging to the user ----------
         get_documents = await db.execute(select(models.Document).where(
             models.Document.user_id == credentials.subject["user_id"]
         ))
@@ -150,7 +153,7 @@ async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuth
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@router.get("/users/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
+@router.get("/documents/{document_id}", response_model=schemas.DocumentResponse, status_code=200)
 async def get_document_by_id(
         document_id: int,
         db: AsyncSession = Depends(get_db),
@@ -190,24 +193,6 @@ async def get_document_by_id(
         
         return response_data
     except HTTPException as e:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-
-@router.get("/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
-async def get_documents(db: AsyncSession = Depends(get_db)):
-    try:
-        # ---------- Get documents ----------
-        get_documents = await db.execute(select(models.Document))
-
-        documents = get_documents.scalars().all()
-
-        if not documents:
-            raise HTTPException(status_code=404, detail="No documents found.")
-
-        return documents
-    except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -505,8 +490,71 @@ async def delete_document(
         await db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@router.post("/c/{chat_session_id}", status_code=200)
-async def query(
+# --- SESSION & CHAT ENDPOINTS ---
+
+@router.get("/sessions", status_code=200)
+async def get_sessions(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+    try:
+        user_id = credentials.subject["user_id"]
+
+        # ---------- Check token's owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- Load all of the chat sessions ----------
+        get_chat_sessions = await db.execute(select(models.ChatSession).where(
+            models.ChatSession.user_id == user_id
+        ))
+
+        chat_sessions = get_chat_sessions.scalars().all()
+
+        if not chat_sessions:
+            raise HTTPException(status_code=404, detail="No session found.")
+
+        return chat_sessions
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    except HTTPException as e:
+        await db.rollback()
+        raise e
+
+@router.post("/sessions", status_code=201)
+async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
+    try:
+        user_id = credentials.subject["user_id"]
+
+        # ---------- Check token's owner ----------
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+
+        user = get_user.scalars().first()
+
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+
+        # ---------- Create new chat session ----------
+        chat_session = models.ChatSession(user_id=user_id)
+        db.add(chat_session)
+        await db.commit()
+
+        return chat_session
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    except HTTPException as e:
+        await db.rollback()
+        raise e
+
+@router.post("/sessions/{chat_session_id}/query", status_code=200)
+async def session_query(
         chat_session_id: int,
         input: schemas.Query,
         db: AsyncSession = Depends(get_db),
@@ -623,8 +671,8 @@ async def query(
         print("=========================")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@router.get("/c/history/{session_id}", status_code=200)
-async def get_chat_history(
+@router.get("/sessions/{session_id}/history", status_code=200)
+async def get_session_history(
         session_id: int,
         db: AsyncSession = Depends(get_db),
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
@@ -660,68 +708,9 @@ async def get_chat_history(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@router.get("/users/sessions", status_code=200)
-async def get_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
-    try:
-        user_id = credentials.subject["user_id"]
+# --- TASK ENDPOINTS ---
 
-        # ---------- Check token's owner ----------
-        get_user = await db.execute(select(models.User).where(
-            models.User.id == user_id
-        ))
-
-        user = get_user.scalars().first()
-
-        if not user:
-            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-
-        # ---------- Load all of the chat sessions ----------
-        get_chat_sessions = await db.execute(select(models.ChatSession).where(
-            models.ChatSession.user_id == user_id
-        ))
-
-        chat_sessions = get_chat_sessions.scalars().all()
-
-        if not chat_sessions:
-            raise HTTPException(status_code=404, detail="No session found.")
-
-        return chat_sessions
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    except HTTPException as e:
-        await db.rollback()
-        raise e
-
-@router.post("/sessions", status_code=201)
-async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
-    try:
-        user_id = credentials.subject["user_id"]
-
-        # ---------- Check token's owner ----------
-        get_user = await db.execute(select(models.User).where(
-            models.User.id == user_id
-        ))
-
-        user = get_user.scalars().first()
-
-        if not user:
-            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-
-        # ---------- Create new chat session ----------
-        chat_session = models.ChatSession(user_id=user_id)
-        db.add(chat_session)
-        await db.commit()
-
-        return chat_session
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    except HTTPException as e:
-        await db.rollback()
-        raise e
-
-@router.get("/task/{task_id}")
+@router.get("/tasks/{task_id}")
 async def get_task_status(task_id: str):
     try:
         result = AsyncResult(task_id, app=celery_task)
