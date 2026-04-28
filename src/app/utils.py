@@ -37,6 +37,7 @@ from llama_index.core import StorageContext
 from . import models
 from sqlalchemy import select
 from .rag import get_index
+from llama_index.core.postprocessor import LLMRerank
 
 class QueryTools:
     def llm(self, temperature):
@@ -52,11 +53,17 @@ class QueryTools:
             ]
         )
 
-        retriever = index.as_retriever(filters=filters, similarity_top_k=2)
+        reranker = LLMRerank(
+            llm=Groq(model="llama-3.3-70b-versatile", temperature=0, api_key=os.getenv("GROQ_API_KEY")),
+            top_n=3,
+            choice_batch_size=5,
+        )
 
-        nodes = await retriever.aretrieve(message)
+        query_engine = index.as_query_engine(filters=filters, similarity_top_k=10, node_postprocessors=[reranker])
 
-        return nodes
+        result = await query_engine.aquery(message)
+
+        return result
 
 # ----------------- Supabase Configuration --------------------
 from supabase import create_client, Client
