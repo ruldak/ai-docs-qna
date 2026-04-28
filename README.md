@@ -1,110 +1,115 @@
-# Document Q&A with AI
+# AI Document Q&A System
 
-Sistem tanya jawab cerdas berbasis AI yang dirancang khusus untuk menganalisis dan berinteraksi dengan berbagai jenis dokumen menggunakan teknik RAG (*Retrieval-Augmented Generation*).
+An intelligent AI-powered Q&A system designed for analyzing and interacting with various document types using RAG (Retrieval-Augmented Generation) techniques.
 
-## 🚀 Fitur Utama
+## 🚀 Key Features
 
-- **Manajemen Dokumen**: Unggah dokumen dalam format PDF, DOCX, atau teks biasa.
-- **RAG Engine**: Menggunakan LlamaIndex dan ChromaDB untuk pencarian informasi yang akurat dalam dokumen.
-- **AI Agent**: Agent cerdas yang mampu memahami konteks percakapan dan menggunakan tools secara mandiri.
-- **Pemrosesan Asinkron**: Indexing dokumen dilakukan di latar belakang menggunakan Celery untuk performa yang responsif.
-- **Manajemen Sesi**: Mendukung riwayat percakapan yang terorganisir per sesi.
-- **Keamanan**: Autentikasi pengguna menggunakan JWT (JSON Web Token).
+- **Document Management**: Support for PDF, DOCX, and plain text formats.
+- **RAG Engine**: Utilizes LlamaIndex and ChromaDB for precise information retrieval.
+- **AI Agent**: Intelligent agent capable of context-aware reasoning and autonomous tool usage.
+- **Asynchronous Processing**: Background file uploads to cloud storage via Celery for a responsive user experience.
+- **Session Management**: Organized conversation history and multi-session support.
+- **Security**: Secure authentication via JWT (JSON Web Token) with role-based access control.
 
 ## 🛠️ Tech Stack
 
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
+- **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Asynchronous)
 - **AI Framework**: [LlamaIndex](https://www.llamaindex.ai/)
-- **Vector Database**: [ChromaDB](https://www.trychroma.com/)
-- **LLM & Embeddings**: [Groq](https://groq.com/) & [HuggingFace Inference API](https://huggingface.co/inference-api)
-- **Database**: PostgreSQL with [SQLModel](https://sqlmodel.tiangolo.com/)
-- **Task Queue**: [Celery](https://docs.celeryq.dev/) (dengan Redis sebagai Broker)
+- **Vector Database**: [ChromaDB](https://www.trychroma.com/) (Persistent Client)
+- **LLM**: Groq (`openai/gpt-oss-120b`)
+- **Embeddings**: HuggingFace Inference API (`intfloat/multilingual-e5-large`)
+- **Database**: PostgreSQL with [SQLModel](https://sqlmodel.tiangolo.com/) & [Alembic](https://alembic.sqlalchemy.org/)
+- **Task Queue**: [Celery](https://docs.celeryq.dev/) (Redis Broker)
 - **Cloud Storage**: [Supabase Storage](https://supabase.com/storage)
 
-## 📋 Prasyarat
+## 🏗️ Architecture & Data Flow
 
-Sebelum memulai, pastikan Anda memiliki:
+1.  **Ingestion**:
+    - Documents are uploaded via the API.
+    - Text is extracted using `PyMuPDF` (PDF) or `docx2txt` (Word).
+    - Content is split into chunks using `SentenceSplitter` (chunk size: 512).
+    - Chunks are embedded and stored in **ChromaDB**.
+2.  **Background Processing**:
+    - Raw files are asynchronously uploaded to **Supabase Storage** using **Celery Workers**.
+3.  **Retrieval & Query**:
+    - User queries trigger a *similarity search* in ChromaDB.
+    - Relevant context is passed to the **Groq LLM** along with chat history.
+    - The AI Agent generates responses based on the retrieved document context.
+
+## 📂 Project Structure
+
+```text
+├── alembic/              # Database migrations
+├── src/
+│   ├── main.py           # Application entry point
+│   ├── api.py            # APIRouter configuration
+│   ├── tasks.py          # Celery task definitions
+│   ├── database.py       # SQLAlchemy/SQLModel configuration
+│   └── app/
+│       ├── models.py     # Database models (ORM)
+│       ├── schemas.py    # Pydantic schemas (Request/Response)
+│       ├── views.py      # API endpoint logic
+│       ├── rag.py        # LlamaIndex & AI model configuration
+│       └── utils.py      # Helpers & 3rd-party integrations (Supabase, JWT)
+└── chroma_db/            # Local persistent vector store
+```
+
+## 📋 Prerequisites
+
+Before you begin, ensure you have:
 - Python 3.10+
 - PostgreSQL
-- Redis (untuk Celery broker)
-- Akun dan API Key untuk:
-  - [Groq Cloud](https://console.groq.com/)
-  - [HuggingFace](https://huggingface.co/settings/tokens)
-  - [Supabase](https://supabase.com/)
-  - [ChromaDB Cloud](https://www.trychroma.com/) (atau setup lokal)
+- Redis (as Celery broker)
+- API Keys for: Groq, HuggingFace, and Supabase.
 
-## ⚙️ Instalasi
+## ⚙️ Installation
 
-1. **Clone repository**:
+1. **Clone & Setup**:
    ```bash
    git clone https://github.com/ruldak/ai-docs-qna.git
    cd ai-docs-qna
-   ```
-
-2. **Buat Virtual Environment**:
-   ```bash
    python -m venv venv
-   source venv/bin/activate  # Linux/macOS
-   # atau
-   venv\Scripts\activate     # Windows
-   ```
-
-3. **Install Dependensi**:
-   ```bash
+   source venv/bin/activate # or venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
-4. **Konfigurasi Environment**:
-   Buat file `.env` di direktori akar dan isi sesuai kebutuhan:
-   ```env
-   # Database
-   DATABASE_URL=postgresql+asyncpg://user:password@localhost/dbname
+2. **Environment Variables**:
+   Copy `.env.example` to `.env` and fill in your credentials.
 
-   # AI Keys
-   GROQ_API_KEY=your_groq_key
-   HUGGINGFACE_API_KEY=your_hf_key
-
-   # Vector Store (ChromaDB)
-   API_KEY=your_chroma_key
-   TENANT=your_tenant
-   VECTOR_DATABASE_NAME=your_db_name
-   COLLECTION_NAME=documents
-
-   # Supabase
-   SUPABASE_URL=your_supabase_url
-   SUPABASE_KEY=your_supabase_key
-   BUCKET_NAME=your_bucket_name
-
-   # Celery
-   CELERY_BROKER_URL=redis://localhost:6379/0
-   CELERY_RESULT_BACKEND=redis://localhost:6379/0
-   ```
-
-## 🏃‍♂️ Menjalankan Aplikasi
-
-1. **Konfigurasi URL Database Alembic**
-
-   Buka file `alembic.ini`, lalu ubah bagian berikut sesuai database Anda:
-
-   ```ini
-   sqlalchemy.url = postgresql://user:password@localhost/dbname
-   ```
-
-2. **Jalankan Migrasi Database**:
+3. **Database Migration**:
+   Configure `sqlalchemy.url` in `alembic.ini`, then run:
    ```bash
    alembic upgrade head
    ```
 
-3. **Jalankan FastAPI Server**:
+## 🏃‍♂️ Running the Application
+
+1. **FastAPI Server**:
    ```bash
    uvicorn src.main:app --reload
    ```
-   Akses dokumentasi API di: `http://localhost:8000/docs`
 
-4. **Jalankan Celery Worker**:
-   Buka terminal baru dan jalankan:
+2. **Celery Worker**:
    ```bash
    celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --loglevel=info
    ```
+
+## 📡 Primary API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/auth/register` | Register a new user |
+| `POST` | `/api/auth/login` | Login and receive a JWT token |
+| `GET` | `/api/auth/me` | Get current user information |
+| `GET` | `/api/documents` | List all documents belonging to the user |
+| `POST` | `/api/documents` | Upload and index a new document |
+| `PUT` | `/api/documents/{id}` | Update document metadata or re-upload file |
+| `DELETE` | `/api/documents/{id}` | Delete a document and its vector index |
+| `GET` | `/api/sessions` | List all chat sessions |
+| `POST` | `/api/sessions` | Create a new chat session |
+| `POST` | `/api/sessions/{id}/query` | Send a query/chat in a specific session |
+| `GET` | `/api/sessions/{id}/history` | Get chat history for a specific session |
+| `GET` | `/api/tasks/{id}` | Check status of background tasks |
+
 ---
 *Status: In Development*
