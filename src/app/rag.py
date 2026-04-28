@@ -9,7 +9,7 @@ from llama_index.llms.groq import Groq
 
 load_dotenv()
 
-# Singleton untuk Index dan Embed Model
+# Singleton for Index and Embed Model
 _index = None
 _embed_model = None
 
@@ -32,12 +32,12 @@ def get_index():
         
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         
-        # Set global embed model agar tidak perlu passing terus menerus
+        # EN: Set global embed model to avoid continuous passing
+        # ID: Set global embed model agar tidak perlu passing terus menerus
         Settings.embed_model = get_embed_model()
         Settings.transformations = [SentenceSplitter(chunk_size=512)]
         Settings.llm = Groq(model="openai/gpt-oss-120b", temperature=0.2, api_key=os.getenv("GROQ_API_KEY"))
 
-        # Load index dari vector store yang sudah ada
         _index = VectorStoreIndex.from_vector_store(
             vector_store, 
             storage_context=storage_context,

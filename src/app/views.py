@@ -29,7 +29,7 @@ from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 from llama_index.core.agent.workflow import FunctionAgent
-from src.tasks import insert_to_vector, celery_task
+from src.tasks import upload_document, celery_task
 from celery.result import AsyncResult
 from typing import List
 from llama_index.core import StorageContext
@@ -303,7 +303,7 @@ async def update_document(
             await asyncio.to_thread(index.delete_ref_doc, str(document_id), delete_from_store=True)
             await asyncio.to_thread(index.insert, docs)
 
-            task = insert_to_vector.delay(
+            task = upload_document.delay(
                 contents=content,
                 filename=file.filename,
                 title=document.title,
@@ -415,7 +415,7 @@ async def post_document(
         index = get_index()
         await asyncio.to_thread(index.insert, docs)
 
-        task = insert_to_vector.delay(
+        task = upload_document.delay(
             contents=content,
             filename=file.filename,
             title=title,

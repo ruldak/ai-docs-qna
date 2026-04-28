@@ -15,14 +15,13 @@ celery_task = Celery(
 )
 
 @celery_task.task(bind=True, max_retries=3, default_retry_delay=30, queue="io_task")
-def insert_to_vector(self, contents: str, filename: str, document_id: int, title: str, description: str, content_type: str):
-    """Sebuah tugas untuk memasukan document ke vector database."""
-    print("Menjalankan tugas: upload dokumen ke supabase")
+def upload_document(self, contents: str, filename: str, document_id: int, title: str, description: str, content_type: str):
+    """A task to upload documents to supabase storage."""
+    print("Execute task: upload document to supabase")
     
     db = SessionLocal()
 
     try:
-        # Upload document to the supabase storage
         print("Start uploading document...")
         bucket_name = os.getenv("BUCKET_NAME")
         file_path = f"uploads/{document_id}/{filename}"
@@ -57,4 +56,4 @@ def insert_to_vector(self, contents: str, filename: str, document_id: int, title
     finally:
         db.close()
     
-    print("Tugas selesai.")
+    print("Task completed.")
