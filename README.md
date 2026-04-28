@@ -2,6 +2,12 @@
 
 An intelligent AI-powered Q&A system designed for analyzing and interacting with various document types using RAG (Retrieval-Augmented Generation) techniques.
 
+## Demo
+
+Here is an example of a query to the API using Swagger UI:
+
+![Example query and response](./ss/1qna_document_ss.png)
+
 ## 🚀 Key Features
 
 - **Document Management**: Support for PDF, DOCX, and plain text formats.
