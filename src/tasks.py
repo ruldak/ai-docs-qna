@@ -4,7 +4,6 @@ from src.app import models
 import os
 from dotenv import load_dotenv
 from .app import utils
-from .app.rag import get_index
 
 load_dotenv()
 
