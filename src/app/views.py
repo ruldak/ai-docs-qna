@@ -34,7 +34,7 @@ from celery.result import AsyncResult
 from typing import List
 from llama_index.core import StorageContext
 from llama_index.core import VectorStoreIndex
-from .rag import get_index
+from .rag import get_ingestion_pipeline, get_vector_store, get_embed_model
 
 load_dotenv()
 
@@ -226,11 +226,6 @@ async def update_document(
         task = None
 
         if file:
-            client = chromadb.PersistentClient(path="./chroma_db")
-
-            collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
-            vstore = ChromaVectorStore(chroma_collection=collection)
-
             # ---------- make sure the file type is supported ----------
             if file.content_type not in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "application/pdf"]:
                 raise HTTPException(status_code=400, detail="file type is not supported.")
@@ -275,7 +270,7 @@ async def update_document(
             elif file.content_type == "text/plain":
                 text = content.decode("utf-8")
 
-            docs = Document(
+            document_file = Document(
                 text=text,
                 metadata={
                     "filename": file.filename,
@@ -284,9 +279,15 @@ async def update_document(
                 doc_id=str(document_id)
             )
 
-            index = get_index()
+            vector_store = get_vector_store()
+            index = VectorStoreIndex.from_vector_store(
+                vector_store, 
+                embed_model=get_embed_model()
+            )
+            pipeline = get_ingestion_pipeline()
+
             await asyncio.to_thread(index.delete_ref_doc, str(document_id), delete_from_store=True)
-            await asyncio.to_thread(index.insert, docs)
+            await pipeline.arun(documents=[document_file], num_workers=4)
 
             task = upload_document.delay(
                 contents=content,
@@ -388,7 +389,7 @@ async def post_document(
         elif file.content_type == "text/plain":
             text = content.decode("utf-8")
 
-        docs = Document(
+        document_file = Document(
             text=text,
             metadata={
                 "filename": file.filename,
@@ -397,8 +398,8 @@ async def post_document(
             doc_id=str(document_instance.id)
         )
 
-        index = get_index()
-        await asyncio.to_thread(index.insert, docs)
+        pipeline = get_ingestion_pipeline()
+        await pipeline.arun(documents=[document_file], num_workers=4)
 
         task = upload_document.delay(
             contents=content,
@@ -580,7 +581,8 @@ async def session_query(
 
         # ---------- Check if the session id exist ----------
         get_chat_sessions = await db.execute(select(models.ChatSession).where(
-            models.ChatSession.id == chat_session_id
+            models.ChatSession.id == chat_session_id,
+            models.ChatSession.user_id == user_id
         ))
 
         chat_sessions = get_chat_sessions.scalars().first()

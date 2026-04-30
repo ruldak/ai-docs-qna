@@ -6,12 +6,15 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.node_parser import SentenceSplitter
 from dotenv import load_dotenv
 from llama_index.llms.groq import Groq
+from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core.node_parser import SentenceSplitter
 
 load_dotenv()
 
 # Singleton for Index and Embed Model
-_index = None
 _embed_model = None
+_pipeline = None
+_vector_store = None
 
 def get_embed_model():
     global _embed_model
@@ -22,25 +25,25 @@ def get_embed_model():
         )
     return _embed_model
 
-def get_index():
-    global _index
-    if _index is None:
-        # Setup Chroma
+def get_vector_store():
+    global _vector_store
+    if _vector_store is None:
         client = chromadb.PersistentClient(path="./chroma_db")
         collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
-        vector_store = ChromaVectorStore(chroma_collection=collection)
-        
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        
-        # EN: Set global embed model to avoid continuous passing
-        # ID: Set global embed model agar tidak perlu passing terus menerus
-        Settings.embed_model = get_embed_model()
-        Settings.transformations = [SentenceSplitter(chunk_size=512)]
-        Settings.llm = Groq(model="openai/gpt-oss-120b", temperature=0.2, api_key=os.getenv("GROQ_API_KEY"))
+        _vector_store = ChromaVectorStore(chroma_collection=collection)
+    return _vector_store
 
-        _index = VectorStoreIndex.from_vector_store(
-            vector_store, 
-            storage_context=storage_context,
-            embed_model=Settings.embed_model,
+def get_ingestion_pipeline():
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = IngestionPipeline(
+            transformations=[
+                SentenceSplitter(chunk_size=512, chunk_overlap=20),
+                get_embed_model(),
+            ],
+            vector_store=get_vector_store(),
+            # 🔥 Kunci untuk production: Docstore untuk incremental update!
+            # docstore=SimpleDocumentStore(), # Mulai dengan yang sederhana dulu
+            # cache=IngestionCache(cache=RedisCache.from_host_and_port(...)) # Nanti untuk scaling
         )
-    return _index
+    return _pipeline
