@@ -84,6 +84,7 @@ llama-index-llms-groq
 llama-index-llms-openai
 llama-index-llms-openai-like
 llama-index-llms-openrouter
+llama-index-postprocessor-cohere-rerank
 llama-index-readers-file
 llama-index-readers-llama-parse
 llama-index-storage-chat-store-postgres
