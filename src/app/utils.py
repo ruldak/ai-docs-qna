@@ -36,16 +36,22 @@ from llama_index.core.vector_stores import MetadataFilter, MetadataFilters, Filt
 from llama_index.core import StorageContext
 from . import models
 from sqlalchemy import select
-from .rag import get_index
-from llama_index.core.postprocessor import LLMRerank
+from .rag import get_vector_store, get_embed_model
+from llama_index.postprocessor.cohere_rerank import CohereRerank
 
 class QueryTools:
+    vector_store = get_vector_store()
+    embed_model = get_embed_model()
+
     def llm(self, temperature):
         return Groq(model="openai/gpt-oss-120b", temperature=temperature, api_key=os.getenv("GROQ_API_KEY"))
 
     async def query_documents(self, message: str, document_id: int):
         """Answer questions based on specific documents."""
-        index = get_index()
+        Settings.embed_model = self.embed_model
+        Settings.llm = self.llm(0.1)
+
+        index = VectorStoreIndex.from_vector_store(self.vector_store, embed_model=Settings.embed_model)
 
         filters = MetadataFilters(
             filters=[
@@ -53,10 +59,10 @@ class QueryTools:
             ]
         )
 
-        reranker = LLMRerank(
-            llm=Groq(model="llama-3.3-70b-versatile", temperature=0, api_key=os.getenv("GROQ_API_KEY")),
-            top_n=3,
-            choice_batch_size=5,
+        reranker = CohereRerank(
+            api_key=os.environ["COHERE_API_KEY"],
+            top_n=2,
+            model="rerank-multilingual-v3.0"
         )
 
         query_engine = index.as_query_engine(filters=filters, similarity_top_k=10, node_postprocessors=[reranker])
