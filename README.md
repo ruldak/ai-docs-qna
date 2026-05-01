@@ -24,6 +24,7 @@ Here is an example of a query to the API using Swagger UI:
 - **Vector Database**: [ChromaDB](https://www.trychroma.com/) (Persistent Client)
 - **LLM**: Groq (`openai/gpt-oss-120b`)
 - **Embeddings**: HuggingFace Inference API (`intfloat/multilingual-e5-large`)
+- **Reranker**: CohereRerank (`rerank-multilingual-v3.0`)
 - **Database**: PostgreSQL with [SQLModel](https://sqlmodel.tiangolo.com/) & [Alembic](https://alembic.sqlalchemy.org/)
 - **Task Queue**: [Celery](https://docs.celeryq.dev/) (Redis Broker)
 - **Cloud Storage**: [Supabase Storage](https://supabase.com/storage)
@@ -66,7 +67,7 @@ Before you begin, ensure you have:
 - Python 3.10+
 - PostgreSQL
 - Redis (as Celery broker)
-- API Keys for: Groq, HuggingFace, and Supabase.
+- API Keys for: CohereRerank, Groq, HuggingFace, and Supabase.
 
 ## ⚙️ Installation
 
