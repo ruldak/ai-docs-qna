@@ -35,6 +35,7 @@ from typing import List
 from llama_index.core import StorageContext
 from llama_index.core import VectorStoreIndex
 from .rag import get_ingestion_pipeline, get_vector_store, get_embed_model
+from pathlib import Path
 
 load_dotenv()
 
@@ -635,17 +636,11 @@ async def session_query(
             description="Use this tool when you need the previous conversation context"
         )
 
-        prompt = f"""You are an AI assistant specialized in document analysis.
+        prompt_file_path = Path(__file__).parent / "system_prompt.txt"
+        with open(prompt_file_path, "r", encoding="utf-8") as f:
+            prompt_template = f.read()
 
-        IMPORTANT RULES:
-        - Always use the tool `load_conversation_history` before answering questions to understand the context.
-        - ONLY call `query_documents` if the user's question explicitly asks for information from a specific document.
-        - If the user asks about your behavior, asks you to not use tools, or says anything unrelated to document content, respond directly WITHOUT calling `query_documents`.
-        - When you do call `query_documents`, use the document_id provided in the user's message (extract it from the text).
-        - Otherwise, reply conversationally.
-
-        Current document_id in context: {input.document_id}
-        """
+        prompt = prompt_template.format(document_id=input.document_id)
         
         agent = FunctionAgent(
             tools=[query_documents, load_conversation_history],
