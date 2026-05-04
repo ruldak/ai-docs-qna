@@ -98,7 +98,7 @@ Before you begin, ensure you have:
 
 2. **Celery Worker**:
    ```bash
-   celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --loglevel=info
+   celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --concurrency=3 --loglevel=info
    ```
 
 ## 📡 Primary API Endpoints
@@ -117,6 +117,3 @@ Before you begin, ensure you have:
 | `POST` | `/api/sessions/{id}/query` | Send a query/chat in a specific session |
 | `GET` | `/api/sessions/{id}/history` | Get chat history for a specific session |
 | `GET` | `/api/tasks/{id}` | Check status of background tasks |
-
----
-> ⚠️ **TODO:** Background Ingestion

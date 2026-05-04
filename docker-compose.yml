@@ -40,7 +40,7 @@ services:
   worker:
     build: .
     container_name: doc_qa_worker
-    command: celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --loglevel=info
+    command: celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --concurrency=3 --loglevel=info
     volumes:
       - .:/app
     env_file:
