@@ -117,3 +117,6 @@ Before you begin, ensure you have:
 | `POST` | `/api/sessions/{id}/query` | Send a query/chat in a specific session |
 | `GET` | `/api/sessions/{id}/history` | Get chat history for a specific session |
 | `GET` | `/api/tasks/{id}` | Check status of background tasks |
+
+---
+> ⚠️ **TODO:** Background Ingestion
