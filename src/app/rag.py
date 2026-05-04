@@ -11,7 +11,7 @@ from llama_index.core.node_parser import SentenceSplitter
 
 load_dotenv()
 
-# Singleton for Index and Embed Model
+# Singleton
 _embed_model = None
 _pipeline = None
 _vector_store = None
