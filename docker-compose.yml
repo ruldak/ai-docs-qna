@@ -28,8 +28,11 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-dbname}
+      - DB_HOST=db
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_BACKEND_URL=redis://redis:6379/0
     depends_on:
@@ -40,7 +43,7 @@ services:
   worker:
     build: .
     container_name: doc_qa_worker
-    command: celery -A src.tasks.celery_task worker --queues=io_task --pool=threads --concurrency=3 --loglevel=info
+    command: celery -A src.tasks.celery_task worker --queues=document_task --pool=threads --concurrency=3 --loglevel=info
     volumes:
       - .:/app
     env_file:
@@ -49,7 +52,7 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-dbname}
+      - DB_HOST=db
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_BACKEND_URL=redis://redis:6379/0
     depends_on:
