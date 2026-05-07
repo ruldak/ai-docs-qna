@@ -8,8 +8,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi_jwt import JwtAuthorizationCredentials
 from sqlalchemy.exc import IntegrityError
 from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
-import chromadb
-from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.readers.file import PDFReader, DocxReader
@@ -19,23 +17,19 @@ import fitz
 from llama_index.core import Document
 import docx2txt
 import io
-from typing import Optional
+from typing import Optional, List
 import asyncio
 from datetime import datetime, timezone
-from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.core.tools import QueryEngineTool
 from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
-from llama_index.core.agent.workflow import FunctionAgent
-from src.tasks import upload_document, celery_task
+from src.tasks import process_document, celery_task
 from celery.result import AsyncResult
-from typing import List
-from llama_index.core import StorageContext
-from llama_index.core import VectorStoreIndex
-from .rag import get_ingestion_pipeline, get_vector_store, get_embed_model
+from .pinecone import PineconeDocumentManager
 from pathlib import Path
+from llama_index.core.llms import ChatMessage as LLMChatMessage
 
 load_dotenv()
 
@@ -271,33 +265,20 @@ async def update_document(
             elif file.content_type == "text/plain":
                 text = content.decode("utf-8")
 
-            document_file = Document(
-                text=text,
-                metadata={
-                    "filename": file.filename,
-                    "id": document_id
-                },
-                doc_id=str(document_id)
-            )
+            document.status = "PENDING"
+            await db.commit()
 
-            vector_store = get_vector_store()
-            index = VectorStoreIndex.from_vector_store(
-                vector_store, 
-                embed_model=get_embed_model()
-            )
-            pipeline = get_ingestion_pipeline()
-
-            await asyncio.to_thread(index.delete_ref_doc, str(document_id), delete_from_store=True)
-            await pipeline.arun(documents=[document_file], num_workers=4)
-
-            task = upload_document.delay(
+            task = process_document.delay(
                 contents=content,
                 filename=file.filename,
+                document_id=document.id,
                 title=document.title,
                 description=document.description,
-                document_id=document_id,
-                content_type=file.content_type
+                content_type=file.content_type,
+                text=text,
+                is_update=True
             )
+
             new_values["indexed_at"] = datetime.now(timezone.utc)
 
         if title:
@@ -369,6 +350,7 @@ async def post_document(
         document_instance = models.Document(title=title, description=description, chunk_count=0, user_id=user_id)
         db.add(document_instance)
         await db.commit()
+        await db.refresh(document_instance)
 
         # ---------- Read and insert file into the vector store ----------
         content = await file.read()
@@ -390,25 +372,15 @@ async def post_document(
         elif file.content_type == "text/plain":
             text = content.decode("utf-8")
 
-        document_file = Document(
-            text=text,
-            metadata={
-                "filename": file.filename,
-                "id": document_instance.id
-            },
-            doc_id=str(document_instance.id)
-        )
-
-        pipeline = get_ingestion_pipeline()
-        await pipeline.arun(documents=[document_file], num_workers=4)
-
-        task = upload_document.delay(
+        task = process_document.delay(
             contents=content,
             filename=file.filename,
+            document_id=document_instance.id,
             title=title,
             description=description,
-            document_id=document_instance.id,
-            content_type=file.content_type
+            content_type=file.content_type,
+            text=text,
+            is_update=False
         )
 
         response_data = {
@@ -442,53 +414,46 @@ async def post_document(
 
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
-        document_id: int,
-        db: AsyncSession = Depends(get_db),
-        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
-    ):
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+):
     try:
-        # ---------- Check token's owner ----------
-        get_user = await db.execute(select(models.User.role).where(
-            models.User.id == credentials.subject["user_id"]
-        ))
-
-        user_role = get_user.scalars().first()
-
-        if not user_role:
-            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-
-        # ---------- Get the document ----------
-        get_document = await db.execute(select(models.Document).where(
+        # 1. Verifikasi kepemilikan dokumen (langsung & efisien)
+        result = await db.execute(select(models.Document).where(
             models.Document.id == document_id,
             models.Document.user_id == credentials.subject["user_id"]
         ))
+        document = result.scalars().first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found or unauthorized")
 
-        document_exist = get_document.scalars().first()
+        doc_manager = PineconeDocumentManager()
 
-        if not document_exist:
-            raise HTTPException(status_code=404, detail="Document not found.")
+        # 3. Jalankan operasi sync di thread terpisah (non-blocking)
+        def delete_from_vector_stores():
+            doc_manager.delete_document(doc_id=str(document_id))
 
-        client = chromadb.PersistentClient(path="./chroma_db")
+        await asyncio.to_thread(delete_from_vector_stores)
 
-        collection = client.get_or_create_collection(os.getenv("COLLECTION_NAME"))
-        vstore = ChromaVectorStore(chroma_collection=collection)
+        # 4. Hapus dari Supabase Storage
+        if document.file_path:
+            try:
+                utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document.file_path])
+            except Exception as e:
+                print(f"⚠️ Supabase storage deletion warning: {e}")
 
-        index = get_index()
-        
-        # delete the document from the vector database
-        index.delete_ref_doc(str(document_id), delete_from_store=True)
-
-        # delete the document from the supabase storage
-        storage_response = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document_exist.file_path])
-        
-        await db.delete(document_exist)
+        # 5. Hapus dari Database
+        await db.delete(document)
         await db.commit()
 
-        return {"detail": "Deleted Successfully."}
     except HTTPException as e:
         await db.rollback()
         raise
     except Exception as e:
+        print(f"======= error deleting document {document_id} =======")
+        print(e)
+        print("=======================================")
         await db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
@@ -563,7 +528,7 @@ async def session_query(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        query_tools = utils.QueryTools()
+        query_engine = utils.PineconeQueryEngine()
         user_id = credentials.subject["user_id"]
 
         # ---------- Check token's owner ----------
@@ -600,7 +565,26 @@ async def session_query(
 
         if not document:
             raise HTTPException(status_code=404, detail="Document not found.")
+
+        # Cek status dokumen - hanya query jika SUCCESS
+        if document.status == "FAILED":
+            raise HTTPException(
+                status_code=500, 
+                detail="Document indexing failed. Please re-upload the document."
+            )
+        elif document.status == "PENDING":
+            raise HTTPException(
+                status_code=409, 
+                detail="Document is pending indexing. Please wait and try again later."
+            )
             
+
+        # ---------- Insert user message into the database ----------
+        user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
+        db.add(user_chat_message)
+
+        llm = query_engine.llm
+
         async def load_conversation_history():
             get_messages = await db.execute(select(models.ChatMessage).where(
                 models.ChatMessage.session_id == chat_session_id
@@ -617,47 +601,49 @@ async def session_query(
 
             return str_messages
 
-        # ---------- Insert user message into the database ----------
-        user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
-        db.add(user_chat_message)
-
-        llm = query_tools.llm(0.6)
-
-        query_documents = FunctionTool.from_defaults(
-            async_fn=query_tools.query_documents,
-            name="query_documents",
-            description="Query documents based on questions related to the document and doc_id.",
-            partial_params={"document_id": input.document_id},
-        )
-        
-        load_conversation_history = FunctionTool.from_defaults(
-            async_fn=load_conversation_history,
-            name="load_conversation_history",
-            description="Use this tool when you need the previous conversation context"
-        )
+        async def query_docs(query: str):
+            res = await query_engine.query(query, document_id=input.document_id)
+            contexts = res.get("contexts", [])
+    
+            if not contexts:
+                return "Tidak ditemukan informasi relevan dalam dokumen."
+            
+            parts = []
+            for i, ctx in enumerate(contexts, 1):
+                parts.append(f"QUOTE {i} (Relevance: {ctx['relevance_score']:.2f}):\n{ctx['text']}")
+            
+            return "\n\n".join(parts)
 
         prompt_file_path = Path(__file__).parent / "system_prompt.txt"
         with open(prompt_file_path, "r", encoding="utf-8") as f:
             prompt_template = f.read()
 
         prompt = prompt_template.format(document_id=input.document_id)
-        
-        agent = FunctionAgent(
-            tools=[query_documents, load_conversation_history],
-            llm=llm,
-            system_prompt=prompt,
-            streaming=False,
-            verbose=True
-        )
-        
-        response = await agent.run(input.message)
+
+        llm_messages = [
+            LLMChatMessage(role="system", content=prompt),
+            LLMChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
+{await load_conversation_history()}
+
+Berikut informasi relevan dari dokumen:
+{await query_docs(input.message)}
+
+Pertanyaan user: {input.message}
+
+Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
+        ]
+
+        # ---------- Call LLM ----------
+        llm = query_engine.llm
+        response = await llm.achat(llm_messages)
+        answer = response.message.content
 
         # ---------- Insert the ai answer into the database and commit ----------
-        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(response))
+        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(answer))
         db.add(assistant_chat_message)
         await db.commit()
 
-        return {"response": str(response)}
+        return {"response": str(answer)}
     except HTTPException as e:
         await db.rollback()
         raise
