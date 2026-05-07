@@ -184,6 +184,14 @@ Jangan tambahkan penjelasan, hanya list variasi."""
         
         return unique[:4]
 
+_query_engine = None
+
+def get_query_engine():
+    global _query_engine
+    if _query_engine is None:
+        _query_engine = PineconeQueryEngine()
+    return _query_engine
+
 # ----------------- Supabase Configuration --------------------
 from supabase import create_client, Client
 

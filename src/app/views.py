@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Security, UploadFile, Fil
 from . import utils, service, models, schemas, constants
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, desc
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi_jwt import JwtAuthorizationCredentials
@@ -266,10 +266,25 @@ async def update_document(
                 text = content.decode("utf-8")
 
             document.status = "PENDING"
-            await db.commit()
+
+            bucket_name = os.getenv("BUCKET_NAME")
+            file_path = f"uploads/{document_id}/{file.filename}"
+            
+            try:
+                res = utils.supabase.storage.from_(bucket_name).upload(
+                    path=file_path,
+                    file=content,
+                    file_options={"content-type": file.content_type, "x-upsert": "true"}
+                )
+                uploaded_path = res.path
+                document.file_path = uploaded_path
+                await db.commit()
+                
+            except Exception as e:
+                await db.rollback()
+                raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
             task = process_document.delay(
-                contents=content,
                 filename=file.filename,
                 document_id=document.id,
                 title=document.title,
@@ -352,6 +367,7 @@ async def post_document(
         await db.commit()
         await db.refresh(document_instance)
 
+
         # ---------- Read and insert file into the vector store ----------
         content = await file.read()
         
@@ -372,8 +388,26 @@ async def post_document(
         elif file.content_type == "text/plain":
             text = content.decode("utf-8")
 
+        bucket_name = os.getenv("BUCKET_NAME")
+        file_path = f"uploads/{document_instance.id}/{file.filename}"
+        
+        try:
+            res = utils.supabase.storage.from_(bucket_name).upload(
+                path=file_path,
+                file=content,
+                file_options={"content-type": file.content_type, "x-upsert": "true"}
+            )
+            uploaded_path = res.path
+            
+            # Update DB dengan file_path
+            document_instance.file_path = uploaded_path
+            await db.commit()
+            
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
         task = process_document.delay(
-            contents=content,
             filename=file.filename,
             document_id=document_instance.id,
             title=title,
@@ -485,12 +519,12 @@ async def get_sessions(db: AsyncSession = Depends(get_db), credentials: JwtAutho
             raise HTTPException(status_code=404, detail="No session found.")
 
         return chat_sessions
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal Server Error")
     except HTTPException as e:
         await db.rollback()
         raise e
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/sessions", status_code=201)
 async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
@@ -513,12 +547,12 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
         await db.commit()
 
         return chat_session
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal Server Error")
     except HTTPException as e:
         await db.rollback()
         raise e
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/sessions/{chat_session_id}/query", status_code=200)
 async def session_query(
@@ -528,7 +562,7 @@ async def session_query(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        query_engine = utils.PineconeQueryEngine()
+        query_engine = utils.get_query_engine()
         user_id = credentials.subject["user_id"]
 
         # ---------- Check token's owner ----------
@@ -546,10 +580,13 @@ async def session_query(
             raise HTTPException(status_code=400, detail="Session id is required.")
 
         # ---------- Check if the session id exist ----------
-        get_chat_sessions = await db.execute(select(models.ChatSession).where(
-            models.ChatSession.id == chat_session_id,
-            models.ChatSession.user_id == user_id
-        ))
+        get_chat_sessions = await db.execute(
+            select(models.ChatSession)
+            .where(
+                models.ChatSession.id == chat_session_id,
+                models.ChatSession.user_id == user_id
+            )
+        )
 
         chat_sessions = get_chat_sessions.scalars().first()
 
@@ -583,12 +620,13 @@ async def session_query(
         user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
         db.add(user_chat_message)
 
-        llm = query_engine.llm
-
         async def load_conversation_history():
-            get_messages = await db.execute(select(models.ChatMessage).where(
-                models.ChatMessage.session_id == chat_session_id
-            ))
+            get_messages = await db.execute(
+                select(models.ChatMessage)
+                .where(models.ChatMessage.session_id == chat_session_id)
+                .order_by(models.ChatMessage.created_at)
+                .limit(20)
+            )
 
             messages = get_messages.scalars().all()
 
