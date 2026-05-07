@@ -74,7 +74,15 @@ Ensure you have the following installed:
    cp .env.example .env
    ```
 
-4. **Run Migrations**:
+4. **Configure Alembic Database URL**:
+   Edit the `alembic.ini` file and set the SQLAlchemy URL:
+   ```ini
+   # sqlalchemy.url = postgresql://db_username:db_password@db_host/db_name
+   sqlalchemy.url = postgresql://your_username:your_password@your_host/your_database
+   ```
+   Replace `your_username`, `your_password`, `your_host`, and `your_database` with your actual PostgreSQL credentials.
+
+5. **Run Migrations**:
    ```bash
    alembic upgrade head
    ```
