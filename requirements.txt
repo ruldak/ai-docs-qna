@@ -21,6 +21,7 @@ cachetools
 celery
 certifi
 cffi
+chardet
 charset-normalizer
 chromadb
 click
