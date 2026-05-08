@@ -147,9 +147,9 @@ class PineconeQueryEngine:
         Returns: List query strings untuk di-embed dan search
         """
         # Prompt untuk expand query
-        prompt = f"""Anda adalah asisten pencarian dokumen hukum Indonesia.
+        prompt = f"""Anda adalah asisten pencarian dokumen.
 Buat 3 variasi pertanyaan berikut untuk pencarian yang lebih baik.
-Variasi harus mencakup sinonim, istilah formal, dan nomor pasal/ayat jika ada.
+Variasi harus mencakup sinonim, istilah formal, singkatan, dan lain-lain.
 
 Pertanyaan asli: {query}
 
