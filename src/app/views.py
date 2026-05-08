@@ -30,10 +30,22 @@ from celery.result import AsyncResult
 from .pinecone import PineconeDocumentManager
 from pathlib import Path
 from llama_index.core.llms import ChatMessage as LLMChatMessage
+import chardet
 
 load_dotenv()
 
 router = APIRouter(prefix="/api")
+
+# =====================================================================
+# Konstanta tipe file yang didukung
+# =====================================================================
+ALLOWED_CONTENT_TYPES = [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+    "application/pdf",
+    "text/markdown",
+    "text/x-markdown",
+]
 
 # --- AUTH ENDPOINTS ---
 
@@ -116,12 +128,62 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+
+# --- HELPER: Ekstraksi teks dari file ---
+def safe_decode(content: bytes) -> str:
+    """
+    Decode bytes ke string dengan deteksi encoding otomatis.
+    File < 100 bytes langsung pakai utf-8 tanpa chardet.
+    """
+    # File kecil: langsung decode utf-8
+    if len(content) < 100:
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return content.decode("utf-8", errors="ignore")
+
+    # File besar: pakai chardet
+    detected = chardet.detect(content)
+    encoding = detected.get("encoding", "utf-8")
+    confidence = detected.get("confidence", 0)
+
+    print(f"Detected encoding: {encoding} (confidence: {confidence:.2f})")
+
+    try:
+        return content.decode(encoding)
+    except (UnicodeDecodeError, LookupError, TypeError):
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return content.decode("utf-8", errors="ignore")
+
+
+def extract_text_from_file(content: bytes, content_type: str) -> str:
+    """
+    Ekstrak teks dari berbagai tipe file.
+    Mendukung: PDF, DOCX, TXT, Markdown
+    """
+    if content_type == "application/pdf":
+        doc = fitz.open(stream=content, filetype="pdf")
+        texts = []
+        for page in doc:
+            texts.append(page.get_text())
+        return "\n".join(texts)
+    elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        file_like = io.BytesIO(content)
+        return docx2txt.process(file_like)
+    elif content_type in ["text/markdown", "text/x-markdown", "text/plain"]:
+        return safe_decode(content)
+
+    else:
+        raise ValueError(f"Unsupported content type: {content_type}")
+
+
 # --- DOCUMENT ENDPOINTS ---
 
 @router.get("/documents", response_model=List[schemas.DocumentResponseList], status_code=200)
 async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuthorizationCredentials = Security(utils.access_security)):
     try:
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
         ))
@@ -131,7 +193,6 @@ async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuth
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Get documents belonging to the user ----------
         get_documents = await db.execute(select(models.Document).where(
             models.Document.user_id == credentials.subject["user_id"]
         ))
@@ -155,7 +216,6 @@ async def get_document_by_id(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
         ))
@@ -178,7 +238,6 @@ async def get_document_by_id(
         response_data = document_instance.__dict__
 
         if document_instance.file_path:
-            # Create Signed URL
             signed_url_res = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).create_signed_url(
                 path=document_instance.file_path,
                 expires_in=3600
@@ -202,7 +261,6 @@ async def update_document(
         credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == credentials.subject["user_id"]
         ))
@@ -212,7 +270,6 @@ async def update_document(
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Check if all fields are empty ----------
         if not title and not description and not file:
             raise HTTPException(status_code=400, detail="One of the fields must be filled in.")
 
@@ -221,15 +278,29 @@ async def update_document(
         task = None
 
         if file:
+            if file.content_type not in ALLOWED_CONTENT_TYPES:
+                filename = file.filename or ""
+                if filename.lower().endswith(".md"):
+                    file.content_type = "text/markdown"
+                else:
+                    raise HTTPException(status_code=400, detail="file type is not supported.")
+
             # ---------- make sure the file type is supported ----------
-            if file.content_type not in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "application/pdf"]:
-                raise HTTPException(status_code=400, detail="file type is not supported.")
+            if file.content_type not in ALLOWED_CONTENT_TYPES:
+                # Fallback: cek ekstensi filename jika content_type tidak dikenali browser
+                filename = file.filename or ""
+                if filename.lower().endswith(".md"):
+                    file.content_type = "text/markdown"
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="file type is not supported. Allowed: PDF, DOCX, TXT, Markdown (.md)"
+                    )
 
             # ---------- make sure file size is under 5mb ----------
             if file.size > 5 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="file size exceeds the specified maximum limit (5mb).")
 
-            # ---------- retrieve the document based on the given ID ----------
             get_document = await db.execute(select(models.Document).where(
                 models.Document.id == document_id,
                 models.Document.user_id == credentials.subject["user_id"]
@@ -237,44 +308,30 @@ async def update_document(
 
             document = get_document.scalars().first()
 
-            # ---------- check if the document exist ----------
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
 
             if document.file_path:
-                # ---------- delete the document from the supabase storage -----------
                 storage_response = utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document.file_path])
 
-            # ---------- Read and insert file into the vector store ----------
+            # ---------- Read and extract text ----------
             content = await file.read()
-            
-            if file.content_type == "application/pdf":
-                doc = fitz.open(stream=content, filetype="pdf")
-
-                texts = []
-                for page in doc:
-                    texts.append(page.get_text())
-
-                text = "\n".join(texts)
-            
-            elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                # EN: wrap the read binary data with BytesIO() so that it can be read() again because docx2txt.process() needs it.
-                # ID: bungkus data biner yang telah dibaca dengan BytesIO() supaya bisa di read() ulang karena docx2txt.process() butuh itu.
-                file_like = io.BytesIO(content)
-                text = docx2txt.process(file_like)
-            elif file.content_type == "text/plain":
-                text = content.decode("utf-8")
+            text = extract_text_from_file(content, file.content_type)
 
             document.status = "PENDING"
 
             bucket_name = os.getenv("BUCKET_NAME")
             file_path = f"uploads/{document_id}/{file.filename}"
+
+            upload_content_type = file.content_type
+            if upload_content_type == "text/markdown" or upload_content_type == "text/x-markdown":
+                upload_content_type = "text/plain"
             
             try:
                 res = utils.supabase.storage.from_(bucket_name).upload(
                     path=file_path,
                     file=content,
-                    file_options={"content-type": file.content_type, "x-upsert": "true"}
+                    file_options={"content-type": upload_content_type, "x-upsert": "true"}
                 )
                 uploaded_path = res.path
                 document.file_path = uploaded_path
@@ -332,7 +389,6 @@ async def post_document(
     ):
     try:
         user_id = credentials.subject["user_id"]
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User.role).where(
             models.User.id == user_id
         ))
@@ -342,7 +398,6 @@ async def post_document(
         if not user_role:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Check if the title is already in use ----------
         get_document = await db.execute(select(models.Document.title).where(
             models.Document.title == title
         ))
@@ -352,14 +407,22 @@ async def post_document(
         if document_exist:
             raise HTTPException(status_code=400, detail="title already in use.")
 
+
         # ---------- make sure the file type is supported ----------
-        if file.content_type not in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "application/pdf"]:
-            raise HTTPException(status_code=400, detail="file type is not supported.")
+        if file.content_type not in ALLOWED_CONTENT_TYPES:
+            # Fallback: cek ekstensi filename jika content_type tidak dikenali browser
+            filename = file.filename or ""
+            if filename.lower().endswith(".md"):
+                file.content_type = "text/markdown"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="file type is not supported. Allowed: PDF, DOCX, TXT, Markdown (.md)"
+                )
 
         # ---------- make sure file size is under 5mb ----------
         if file.size > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="file size exceeds the specified maximum limit (5mb).")
-
 
         # ---------- Insert the file's informations into the database ----------
         document_instance = models.Document(title=title, description=description, chunk_count=0, user_id=user_id)
@@ -367,39 +430,25 @@ async def post_document(
         await db.commit()
         await db.refresh(document_instance)
 
-
-        # ---------- Read and insert file into the vector store ----------
+        # ---------- Read and extract text ----------
         content = await file.read()
-        
-        if file.content_type == "application/pdf":
-            doc = fitz.open(stream=content, filetype="pdf")
-
-            texts = []
-            for page in doc:
-                texts.append(page.get_text())
-
-            text = "\n".join(texts)
-        
-        elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            # EN: wrap the read binary data with BytesIO so that it can be read() again because docx2txt.process() needs it.
-            # ID: bungkus data biner yang telah dibaca dengan BytesIO supaya bisa di read() ulang karena docx2txt.process() butuh itu.
-            file_like = io.BytesIO(content)
-            text = docx2txt.process(file_like)
-        elif file.content_type == "text/plain":
-            text = content.decode("utf-8")
+        text = extract_text_from_file(content, file.content_type)
 
         bucket_name = os.getenv("BUCKET_NAME")
         file_path = f"uploads/{document_instance.id}/{file.filename}"
+
+        upload_content_type = file.content_type
+        if upload_content_type == "text/markdown" or upload_content_type == "text/x-markdown":
+            upload_content_type = "text/plain"
         
         try:
             res = utils.supabase.storage.from_(bucket_name).upload(
                 path=file_path,
                 file=content,
-                file_options={"content-type": file.content_type, "x-upsert": "true"}
+                file_options={"content-type": upload_content_type, "x-upsert": "true"}
             )
             uploaded_path = res.path
             
-            # Update DB dengan file_path
             document_instance.file_path = uploaded_path
             await db.commit()
             
@@ -453,7 +502,6 @@ async def delete_document(
     credentials: JwtAuthorizationCredentials = Security(utils.access_security)
 ):
     try:
-        # 1. Verifikasi kepemilikan dokumen (langsung & efisien)
         result = await db.execute(select(models.Document).where(
             models.Document.id == document_id,
             models.Document.user_id == credentials.subject["user_id"]
@@ -464,20 +512,17 @@ async def delete_document(
 
         doc_manager = PineconeDocumentManager()
 
-        # 3. Jalankan operasi sync di thread terpisah (non-blocking)
         def delete_from_vector_stores():
             doc_manager.delete_document(doc_id=str(document_id))
 
         await asyncio.to_thread(delete_from_vector_stores)
 
-        # 4. Hapus dari Supabase Storage
         if document.file_path:
             try:
                 utils.supabase.storage.from_(os.getenv("BUCKET_NAME")).remove([document.file_path])
             except Exception as e:
                 print(f"⚠️ Supabase storage deletion warning: {e}")
 
-        # 5. Hapus dari Database
         await db.delete(document)
         await db.commit()
 
@@ -498,7 +543,6 @@ async def get_sessions(db: AsyncSession = Depends(get_db), credentials: JwtAutho
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -508,7 +552,6 @@ async def get_sessions(db: AsyncSession = Depends(get_db), credentials: JwtAutho
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Load all of the chat sessions ----------
         get_chat_sessions = await db.execute(select(models.ChatSession).where(
             models.ChatSession.user_id == user_id
         ))
@@ -531,7 +574,6 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -541,7 +583,6 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- Create new chat session ----------
         chat_session = models.ChatSession(user_id=user_id)
         db.add(chat_session)
         await db.commit()
@@ -565,7 +606,6 @@ async def session_query(
         query_engine = utils.get_query_engine()
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -575,11 +615,9 @@ async def session_query(
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-
         if not chat_session_id:
             raise HTTPException(status_code=400, detail="Session id is required.")
 
-        # ---------- Check if the session id exist ----------
         get_chat_sessions = await db.execute(
             select(models.ChatSession)
             .where(
@@ -593,7 +631,6 @@ async def session_query(
         if not chat_sessions:
             raise HTTPException(status_code=404, detail="No session found.")
 
-        # ---------- Check if the document exist ----------
         get_document = await db.execute(select(models.Document).where(
             models.Document.id == input.document_id
         ))
@@ -603,7 +640,6 @@ async def session_query(
         if not document:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-        # Cek status dokumen - hanya query jika SUCCESS
         if document.status == "FAILED":
             raise HTTPException(
                 status_code=500, 
@@ -614,9 +650,7 @@ async def session_query(
                 status_code=409, 
                 detail="Document is pending indexing. Please wait and try again later."
             )
-            
 
-        # ---------- Insert user message into the database ----------
         user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
         db.add(user_chat_message)
 
@@ -671,12 +705,10 @@ Pertanyaan user: {input.message}
 Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
         ]
 
-        # ---------- Call LLM ----------
         llm = query_engine.llm
         response = await llm.achat(llm_messages)
         answer = response.message.content
 
-        # ---------- Insert the ai answer into the database and commit ----------
         assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(answer))
         db.add(assistant_chat_message)
         await db.commit()
@@ -701,7 +733,6 @@ async def get_session_history(
     try:
         user_id = credentials.subject["user_id"]
 
-        # ---------- Check token's owner ----------
         get_user = await db.execute(select(models.User).where(
             models.User.id == user_id
         ))
@@ -711,7 +742,6 @@ async def get_session_history(
         if not user:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        # ---------- retrieve chat messages from the given session id and user id. ----------
         get_messages = await db.execute(select(models.ChatMessage).where(
             models.ChatMessage.session_id == session_id,
             models.ChatMessage.user_id == user_id
