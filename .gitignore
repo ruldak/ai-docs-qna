@@ -80,5 +80,6 @@ logs/
 *.swo
 *~
 
-# chroma vector store
+# vector stores
 chroma_db/
+lancedb_data/
