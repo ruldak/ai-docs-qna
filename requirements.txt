@@ -23,7 +23,6 @@ certifi
 cffi
 chardet
 charset-normalizer
-chromadb
 click
 click-didyoumean
 click-plugins
@@ -76,6 +75,7 @@ jsonschema
 jsonschema-specifications
 kombu
 kubernetes
+lancedb
 llama-cloud
 llama-cloud-services
 llama-index
@@ -97,8 +97,8 @@ llama-index-readers-file
 llama-index-readers-llama-parse
 llama-index-storage-chat-store-postgres
 llama-index-utils-huggingface
-llama-index-vector-stores-pinecone
 llama-index-workflows
+llama-index-vector-stores-lancedb
 llama-parse
 Mako
 markdown-it-py
