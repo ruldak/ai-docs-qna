@@ -27,10 +27,11 @@ from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 from src.tasks import process_document, celery_task
 from celery.result import AsyncResult
-from .pinecone import PineconeDocumentManager
+from.lancedb_manager import LanceDBDocumentManager
 from pathlib import Path
 from llama_index.core.llms import ChatMessage as LLMChatMessage
 import chardet
+import traceback
 
 load_dotenv()
 
@@ -65,6 +66,7 @@ async def get_current_user(db: AsyncSession = Depends(get_db), credentials: JwtA
     except HTTPException:
         raise
     except Exception as e:
+        traceback.print_exc()
         print(f"user get error 500: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error.")
 
@@ -102,6 +104,7 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(get_db))
         raise
     except Exception as e:
         await db.rollback()
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/auth/login", response_model=schemas.LoginResponse)
@@ -126,6 +129,7 @@ async def login(user: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
@@ -206,6 +210,7 @@ async def get_documents(db: AsyncSession = Depends(get_db), credentials: JwtAuth
     except HTTPException:
         raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
@@ -249,6 +254,7 @@ async def get_document_by_id(
     except HTTPException as e:
         raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.put("/documents/{document_id}", status_code=200)
@@ -339,6 +345,7 @@ async def update_document(
                 
             except Exception as e:
                 await db.rollback()
+                traceback.print_exc()
                 raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
             task = process_document.delay(
@@ -374,6 +381,7 @@ async def update_document(
         await db.rollback()
         raise
     except Exception as e:
+        traceback.print_exc()
         print("======== ERROR =========")
         print(f"error update document: {e}")
         print("========================")
@@ -454,6 +462,7 @@ async def post_document(
             
         except Exception as e:
             await db.rollback()
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
         task = process_document.delay(
@@ -489,6 +498,7 @@ async def post_document(
         await db.rollback()
         raise
     except Exception as e:
+        traceback.print_exc()
         print("======== ERROR =========")
         print(f"error post document: {e}")
         print("========================")
@@ -510,7 +520,7 @@ async def delete_document(
         if not document:
             raise HTTPException(status_code=404, detail="Document not found or unauthorized")
 
-        doc_manager = PineconeDocumentManager()
+        doc_manager = LanceDBDocumentManager()
 
         def delete_from_vector_stores():
             doc_manager.delete_document(doc_id=str(document_id))
@@ -523,6 +533,7 @@ async def delete_document(
             except Exception as e:
                 print(f"⚠️ Supabase storage deletion warning: {e}")
 
+                traceback.print_exc()
         await db.delete(document)
         await db.commit()
 
@@ -530,6 +541,7 @@ async def delete_document(
         await db.rollback()
         raise
     except Exception as e:
+        traceback.print_exc()
         print(f"======= error deleting document {document_id} =======")
         print(e)
         print("=======================================")
@@ -567,6 +579,7 @@ async def get_sessions(db: AsyncSession = Depends(get_db), credentials: JwtAutho
         raise e
     except Exception as e:
         await db.rollback()
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/sessions", status_code=201)
@@ -593,6 +606,7 @@ async def create_session(db: AsyncSession = Depends(get_db), credentials: JwtAut
         raise e
     except Exception as e:
         await db.rollback()
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post("/sessions/{chat_session_id}/query", status_code=200)
@@ -600,125 +614,137 @@ async def session_query(
         chat_session_id: int,
         input: schemas.Query,
         db: AsyncSession = Depends(get_db),
-        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+        # credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
         query_engine = utils.get_query_engine()
-        user_id = credentials.subject["user_id"]
+        print("==========================")
+        print(await query_engine.query(input.message, input.document_id))
+        print("==========================")
+#         user_id = credentials.subject["user_id"]
 
-        get_user = await db.execute(select(models.User).where(
-            models.User.id == user_id
-        ))
+#         get_user = await db.execute(select(models.User).where(
+#             models.User.id == user_id
+#         ))
 
-        user = get_user.scalars().first()
+#         user = get_user.scalars().first()
 
-        if not user:
-            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+#         if not user:
+#             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-        if not chat_session_id:
-            raise HTTPException(status_code=400, detail="Session id is required.")
+#         if not chat_session_id:
+#             raise HTTPException(status_code=400, detail="Session id is required.")
 
-        get_chat_sessions = await db.execute(
-            select(models.ChatSession)
-            .where(
-                models.ChatSession.id == chat_session_id,
-                models.ChatSession.user_id == user_id
-            )
-        )
+#         get_chat_sessions = await db.execute(
+#             select(models.ChatSession)
+#             .where(
+#                 models.ChatSession.id == chat_session_id,
+#                 models.ChatSession.user_id == user_id
+#             )
+#         )
 
-        chat_sessions = get_chat_sessions.scalars().first()
+#         chat_sessions = get_chat_sessions.scalars().first()
 
-        if not chat_sessions:
-            raise HTTPException(status_code=404, detail="No session found.")
+#         if not chat_sessions:
+#             raise HTTPException(status_code=404, detail="No session found.")
 
-        get_document = await db.execute(select(models.Document).where(
-            models.Document.id == input.document_id
-        ))
+#         get_document = await db.execute(select(models.Document).where(
+#             models.Document.id == input.document_id
+#         ))
 
-        document = get_document.scalars().first()
+#         document = get_document.scalars().first()
 
-        if not document:
-            raise HTTPException(status_code=404, detail="Document not found.")
+#         if not document:
+#             raise HTTPException(status_code=404, detail="Document not found.")
 
-        if document.status == "FAILED":
-            raise HTTPException(
-                status_code=500, 
-                detail="Document indexing failed. Please re-upload the document."
-            )
-        elif document.status == "PENDING":
-            raise HTTPException(
-                status_code=409, 
-                detail="Document is pending indexing. Please wait and try again later."
-            )
+#         if document.status == "FAILED":
+#             raise HTTPException(
+#                 status_code=500, 
+#                 detail="Document indexing failed. Please re-upload the document."
+#             )
+#         elif document.status == "PENDING":
+#             raise HTTPException(
+#                 status_code=409, 
+#                 detail="Document is pending indexing. Please wait and try again later."
+#             )
 
-        user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
-        db.add(user_chat_message)
+#         user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
+#         db.add(user_chat_message)
 
-        async def load_conversation_history():
-            get_messages = await db.execute(
-                select(models.ChatMessage)
-                .where(models.ChatMessage.session_id == chat_session_id)
-                .order_by(models.ChatMessage.created_at)
-                .limit(20)
-            )
+#         async def load_conversation_history():
+#             get_messages = await db.execute(
+#                 select(models.ChatMessage)
+#                 .where(models.ChatMessage.session_id == chat_session_id)
+#                 .order_by(models.ChatMessage.created_at)
+#                 .limit(20)
+#             )
 
-            messages = get_messages.scalars().all()
+#             messages = get_messages.scalars().all()
 
-            if not messages:
-                return f"No messages in session id {chat_session_id}"
+#             if not messages:
+#                 return f"No messages in session id {chat_session_id}"
 
-            str_messages = ""
-            for msg in messages:
-                str_messages += f"{msg.role}: {msg.content}\n"
+#             str_messages = ""
+#             for msg in messages:
+#                 str_messages += f"{msg.role}: {msg.content}\n"
 
-            return str_messages
+#             return str_messages
 
-        async def query_docs(query: str):
-            res = await query_engine.query(query, document_id=input.document_id)
-            contexts = res.get("contexts", [])
-    
-            if not contexts:
-                return "Tidak ditemukan informasi relevan dalam dokumen."
+#         async def query_docs(query: str):
+#             res = await query_engine.query(query, document_id=input.document_id)
+#             contexts = res.get("contexts", [])
+#             confidence = res.get("confidence", {})
+#             sources = res.get("sources", [])
+
+#             if not contexts:
+#                 return "Tidak ditemukan informasi relevan dalam dokumen."
             
-            parts = []
-            for i, ctx in enumerate(contexts, 1):
-                parts.append(f"QUOTE {i} (Relevance: {ctx['relevance_score']:.2f}):\n{ctx['text']}")
+#             parts = []
+#             for i, ctx in enumerate(contexts, 1):
+#                 parts.append(f"QUOTE {i} (Relevance: {ctx['relevance_score']:.2f}):\n{ctx['text']}")
             
-            return "\n\n".join(parts)
+#             return {
+#                 "context": "\n\n".join(parts),
+#                 "confidence": confidence,
+#                 "sources": sources
+#             }
 
-        prompt_file_path = Path(__file__).parent / "system_prompt.txt"
-        with open(prompt_file_path, "r", encoding="utf-8") as f:
-            prompt_template = f.read()
+#         prompt_file_path = Path(__file__).parent / "system_prompt.txt"
+#         with open(prompt_file_path, "r", encoding="utf-8") as f:
+#             prompt_template = f.read()
 
-        prompt = prompt_template.format(document_id=input.document_id)
+#         prompt = prompt_template.format(document_id=input.document_id)
 
-        llm_messages = [
-            LLMChatMessage(role="system", content=prompt),
-            LLMChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
-{await load_conversation_history()}
+#         query_result = await query_docs(input.message)
 
-Berikut informasi relevan dari dokumen:
-{await query_docs(input.message)}
+#         llm_messages = [
+#             LLMChatMessage(role="system", content=prompt),
+#             LLMChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
+# {await load_conversation_history()}
 
-Pertanyaan user: {input.message}
+# Berikut informasi relevan dari dokumen:
+# {query_result.get("context", "")}
 
-Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
-        ]
+# Pertanyaan user: {input.message}
 
-        llm = query_engine.llm
-        response = await llm.achat(llm_messages)
-        answer = response.message.content
+# Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
+#         ]
 
-        assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(answer))
-        db.add(assistant_chat_message)
-        await db.commit()
+#         llm = query_engine.llm
+#         response = await llm.achat(llm_messages)
+#         answer = response.message.content
 
-        return {"response": str(answer)}
+#         assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(answer))
+#         db.add(assistant_chat_message)
+#         await db.commit()
+
+#         return {"response": str(answer)}
     except HTTPException as e:
         await db.rollback()
         raise
     except Exception as e:
         await db.rollback()
+        traceback.print_exc()
         print("========= ERROR =========")
         print(f"error: {e}")
         print("=========================")
@@ -757,6 +783,7 @@ async def get_session_history(
         await db.rollback()
         raise e
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 # --- TASK ENDPOINTS ---
@@ -781,4 +808,5 @@ async def get_task_status(task_id: str):
         
         return response
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")

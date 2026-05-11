@@ -3,7 +3,7 @@ from src.tasks_database import SessionLocal
 from src.app import models
 import os
 from dotenv import load_dotenv
-from src.app.pinecone import PineconeDocumentManager
+from src.app.lancedb_manager import LanceDBDocumentManager
 
 load_dotenv()
 
@@ -13,7 +13,7 @@ celery_task = Celery(
     backend=os.getenv("CELERY_BACKEND_URL")
 )
 
-doc_manager = PineconeDocumentManager()
+doc_manager = LanceDBDocumentManager()
 
 @celery_task.task(bind=True, max_retries=3, default_retry_delay=30, queue="document_task")
 def process_document(self, filename: str, document_id: int, title: str, description: str, content_type: str, text: str, is_update: bool = False):
@@ -32,7 +32,7 @@ def process_document(self, filename: str, document_id: int, title: str, descript
                 doc_manager.delete_document(str(document_id))
             
             print(f"[Process] Upserting document {document_id}")
-            doc_manager.upsert_document(str(document_id), text, {"filename": filename})
+            doc_manager.upsert_document(doc_id=str(document_id), text=text, metadata={"filename": filename})
             
             final_status = "SUCCESS"
             print(f"[Process] Ingest SUCCESS")
