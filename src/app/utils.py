@@ -27,25 +27,18 @@ refresh_security = JwtRefreshBearer(secret_key=secret_key, auto_error=True, refr
 
 # ---------- Query Engine ----------
 import cohere
-from typing import List
 from .lancedb_manager import get_vector_store, get_embed_model
 from llama_index.llms.groq import Groq
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.embeddings.huggingface_api import HuggingFaceInferenceAPIEmbedding
 
 class LlamaIndexQueryEngine:
-    """
-    LlamaIndex query engine dengan LanceDB sebagai storage.
-    Tidak ada mapping di RAM — selalu fetch fresh dari LanceDB.
-    """
-
     def __init__(self):
         self.vector_store = get_vector_store()
         self.embed_model = get_embed_model()
 
-        # LLM
         self.llm = Groq(
             model="llama-3.3-70b-versatile",
             api_key=os.getenv("GROQ_API_KEY"),
@@ -54,15 +47,42 @@ class LlamaIndexQueryEngine:
 
         Settings.llm = self.llm
 
-        # Cohere
         self.api_key = os.getenv("COHERE_API_KEY")
         self.client = cohere.Client(self.api_key)
 
     async def query(self, query: str, document_id: int, top_k: int = 5) -> str:
         """
-        Query via LlamaIndex retriever → Cohere rerank.
+        Query via LlamaIndex retriever. Hanya return string jawaban.
         """
-        # Build index dari vector store (tidak di RAM, fetch on query)
+        response = await self._execute_query(query, document_id, top_k)
+        if response is None:
+            return "Empty response"
+        return response.response
+
+    async def query_with_sources(
+        self, query: str, document_id: int, top_k: int = 5
+    ) -> Tuple[str, List[str]]:
+        """
+        Query + return (jawaban, list_contexts).
+        Contexts diambil dari source_nodes LlamaIndex.
+        """
+        response = await self._execute_query(query, document_id, top_k)
+        
+        if response is None:
+            return "Empty response", []
+        
+        # Ekstrak teks dari source nodes sebagai contexts
+        contexts = []
+        if hasattr(response, "source_nodes") and response.source_nodes:
+            for node in response.source_nodes:
+                contexts.append(node.get_content())
+        
+        return response.response, contexts
+
+    async def _execute_query(self, query: str, document_id: int, top_k: int = 5):
+        """
+        Internal: execute query engine dan return response object.
+        """
         index = VectorStoreIndex.from_vector_store(
             vector_store=self.vector_store,
             embed_model=self.embed_model
@@ -72,7 +92,6 @@ class LlamaIndexQueryEngine:
             filters=[ExactMatchFilter(key="doc_id", value=str(document_id))]
         )
 
-        # Retriever — fetch dari LanceDB
         query_engine = index.as_query_engine(
             filters=filters,
             similarity_top_k=top_k * 3,
@@ -82,18 +101,14 @@ class LlamaIndexQueryEngine:
 
         try:
             response = await query_engine.aquery(query)
-            nodes = response.source_nodes or []
+            return response
         except Warning as w:
             print(f"[LanceDB] empty result for doc_id={document_id}: {w}")
-            nodes = []
+            return None
         except Exception as e:
             print(f"[Query] error: {e}")
-            nodes = []
+            return None
 
-        if not nodes:
-            return "Empty response"
-
-        return response.response
 
 def get_query_engine():
     return LlamaIndexQueryEngine()

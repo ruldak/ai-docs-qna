@@ -25,13 +25,14 @@ from llama_index.core.tools import QueryEngineTool
 from llama_index.storage.chat_store.postgres import PostgresChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
-from src.tasks import process_document, celery_task
+from src.tasks import process_document, celery_task, evaluate_chat_message
 from celery.result import AsyncResult
 from.lancedb_manager import LanceDBDocumentManager
 from pathlib import Path
 from llama_index.core.llms import ChatMessage as LLMChatMessage
 import chardet
 import traceback
+from sqlalchemy.sql import func
 
 load_dotenv()
 
@@ -614,140 +615,134 @@ async def session_query(
         chat_session_id: int,
         input: schemas.Query,
         db: AsyncSession = Depends(get_db),
-        # credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+        credentials: JwtAuthorizationCredentials = Security(utils.access_security)
     ):
     try:
         query_engine = utils.get_query_engine()
-        print("==========================")
-        print(await query_engine.query(input.message, input.document_id))
-        print("==========================")
-#         user_id = credentials.subject["user_id"]
+        user_id = credentials.subject["user_id"]
 
-#         get_user = await db.execute(select(models.User).where(
-#             models.User.id == user_id
-#         ))
+        get_user = await db.execute(select(models.User).where(
+            models.User.id == user_id
+        ))
+        user = get_user.scalars().first()
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
 
-#         user = get_user.scalars().first()
+        if not chat_session_id:
+            raise HTTPException(status_code=400, detail="Session id is required.")
 
-#         if not user:
-#             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+        get_chat_sessions = await db.execute(
+            select(models.ChatSession)
+            .where(
+                models.ChatSession.id == chat_session_id,
+                models.ChatSession.user_id == user_id
+            )
+        )
+        chat_sessions = get_chat_sessions.scalars().first()
+        if not chat_sessions:
+            raise HTTPException(status_code=404, detail="No session found.")
 
-#         if not chat_session_id:
-#             raise HTTPException(status_code=400, detail="Session id is required.")
+        get_document = await db.execute(select(models.Document).where(
+            models.Document.id == input.document_id
+        ))
+        document = get_document.scalars().first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found.")
 
-#         get_chat_sessions = await db.execute(
-#             select(models.ChatSession)
-#             .where(
-#                 models.ChatSession.id == chat_session_id,
-#                 models.ChatSession.user_id == user_id
-#             )
-#         )
+        if document.status == "FAILED":
+            raise HTTPException(
+                status_code=500, 
+                detail="Document indexing failed. Please re-upload the document."
+            )
+        elif document.status == "PENDING":
+            raise HTTPException(
+                status_code=409, 
+                detail="Document is pending indexing. Please wait and try again later."
+            )
 
-#         chat_sessions = get_chat_sessions.scalars().first()
+        # Simpan user message
+        user_chat_message = models.ChatMessage(
+            session_id=chat_session_id, 
+            user_id=user_id, 
+            role="user", 
+            content=input.message
+        )
+        db.add(user_chat_message)
+        await db.flush()  # flush supaya ID tersedia kalau diperlukan
 
-#         if not chat_sessions:
-#             raise HTTPException(status_code=404, detail="No session found.")
+        # Load history
+        async def load_conversation_history():
+            get_messages = await db.execute(
+                select(models.ChatMessage)
+                .where(models.ChatMessage.session_id == chat_session_id)
+                .order_by(models.ChatMessage.created_at)
+                .limit(20)
+            )
+            messages = get_messages.scalars().all()
+            if not messages:
+                return f"No messages in session id {chat_session_id}"
+            return "\n".join([f"{msg.role}: {msg.content}" for msg in messages])
 
-#         get_document = await db.execute(select(models.Document).where(
-#             models.Document.id == input.document_id
-#         ))
+        prompt_file_path = Path(__file__).parent / "system_prompt.txt"
+        with open(prompt_file_path, "r", encoding="utf-8") as f:
+            prompt_template = f.read()
 
-#         document = get_document.scalars().first()
+        prompt = prompt_template.format(document_id=input.document_id)
 
-#         if not document:
-#             raise HTTPException(status_code=404, detail="Document not found.")
+        # ============================================================
+        # FIX KRITIS: Gunakan query_with_sources untuk ambil contexts
+        # ============================================================
+        res, contexts = await query_engine.query_with_sources(
+            query=input.message, 
+            document_id=input.document_id
+        )
 
-#         if document.status == "FAILED":
-#             raise HTTPException(
-#                 status_code=500, 
-#                 detail="Document indexing failed. Please re-upload the document."
-#             )
-#         elif document.status == "PENDING":
-#             raise HTTPException(
-#                 status_code=409, 
-#                 detail="Document is pending indexing. Please wait and try again later."
-#             )
+        llm_messages = [
+            LLMChatMessage(role="system", content=prompt),
+            LLMChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
+{await load_conversation_history()}
 
-#         user_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="user", content=input.message)
-#         db.add(user_chat_message)
+Berikut informasi relevan dari dokumen:
+{res}
 
-#         async def load_conversation_history():
-#             get_messages = await db.execute(
-#                 select(models.ChatMessage)
-#                 .where(models.ChatMessage.session_id == chat_session_id)
-#                 .order_by(models.ChatMessage.created_at)
-#                 .limit(20)
-#             )
+Pertanyaan user: {input.message}
 
-#             messages = get_messages.scalars().all()
+Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
+        ]
 
-#             if not messages:
-#                 return f"No messages in session id {chat_session_id}"
+        llm = query_engine.llm
+        response = await llm.achat(llm_messages)
+        answer = response.message.content
 
-#             str_messages = ""
-#             for msg in messages:
-#                 str_messages += f"{msg.role}: {msg.content}\n"
+        # Simpan assistant message
+        assistant_chat_message = models.ChatMessage(
+            session_id=chat_session_id, 
+            user_id=user_id, 
+            role="assistant", 
+            content=str(answer)
+        )
+        db.add(assistant_chat_message)
+        await db.flush()  # flush untuk dapat ID
 
-#             return str_messages
+        evaluation = models.ChatEvaluation(
+            message_id=assistant_chat_message.id,
+            contexts=contexts,
+            status="PENDING"
+        )
+        db.add(evaluation)
+        await db.commit()
 
-#         async def query_docs(query: str):
-#             res = await query_engine.query(query, document_id=input.document_id)
-#             contexts = res.get("contexts", [])
-#             confidence = res.get("confidence", {})
-#             sources = res.get("sources", [])
+        # Trigger background evaluation (non-blocking)
+        evaluate_chat_message.delay(evaluation.id, question=input.message)
 
-#             if not contexts:
-#                 return "Tidak ditemukan informasi relevan dalam dokumen."
-            
-#             parts = []
-#             for i, ctx in enumerate(contexts, 1):
-#                 parts.append(f"QUOTE {i} (Relevance: {ctx['relevance_score']:.2f}):\n{ctx['text']}")
-            
-#             return {
-#                 "context": "\n\n".join(parts),
-#                 "confidence": confidence,
-#                 "sources": sources
-#             }
+        return {"response": str(answer)}
 
-#         prompt_file_path = Path(__file__).parent / "system_prompt.txt"
-#         with open(prompt_file_path, "r", encoding="utf-8") as f:
-#             prompt_template = f.read()
-
-#         prompt = prompt_template.format(document_id=input.document_id)
-
-#         query_result = await query_docs(input.message)
-
-#         llm_messages = [
-#             LLMChatMessage(role="system", content=prompt),
-#             LLMChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
-# {await load_conversation_history()}
-
-# Berikut informasi relevan dari dokumen:
-# {query_result.get("context", "")}
-
-# Pertanyaan user: {input.message}
-
-# Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."""),
-#         ]
-
-#         llm = query_engine.llm
-#         response = await llm.achat(llm_messages)
-#         answer = response.message.content
-
-#         assistant_chat_message = models.ChatMessage(session_id=chat_session_id, user_id=user_id, role="assistant", content=str(answer))
-#         db.add(assistant_chat_message)
-#         await db.commit()
-
-#         return {"response": str(answer)}
     except HTTPException as e:
         await db.rollback()
         raise
     except Exception as e:
         await db.rollback()
         traceback.print_exc()
-        print("========= ERROR =========")
-        print(f"error: {e}")
-        print("=========================")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.get("/sessions/{session_id}/history", status_code=200)
@@ -782,6 +777,88 @@ async def get_session_history(
     except HTTPException as e:
         await db.rollback()
         raise e
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# --- INTERNAL: EVALUATION ENDPOINTS ---
+
+@router.get("/admin/evaluations", status_code=200)
+async def get_evaluation_stats(
+    db: AsyncSession = Depends(get_db),
+    credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+):
+    """
+    Endpoint internal untuk melihat statistik evaluasi RAG.
+    """
+    try:
+        # Ambil rata-rata skor per session
+        result = await db.execute(
+            select(
+                models.ChatMessage.session_id,
+                func.avg(models.ChatEvaluation.faithfulness_score).label("avg_faithfulness"),
+                func.avg(models.ChatEvaluation.answer_relevancy_score).label("avg_relevancy"),
+                func.count(models.ChatEvaluation.id).label("total_evaluated")
+            )
+            .join(models.ChatEvaluation, models.ChatMessage.id == models.ChatEvaluation.message_id)
+            .where(models.ChatEvaluation.status == "SUCCESS")
+            .group_by(models.ChatMessage.session_id)
+            .order_by(desc("avg_faithfulness"))
+        )
+        
+        stats = result.all()
+        
+        if not stats:
+            raise HTTPException(status_code=404, detail="No evaluations found.")
+        
+        return [
+            {
+                "session_id": row.session_id,
+                "avg_faithfulness": round(row.avg_faithfulness, 4) if row.avg_faithfulness else None,
+                "avg_relevancy": round(row.avg_relevancy, 4) if row.avg_relevancy else None,
+                "total_evaluated": row.total_evaluated
+            }
+            for row in stats
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@router.get("/admin/evaluations/{evaluation_id}", status_code=200)
+async def get_evaluation_detail(
+    evaluation_id: int,
+    db: AsyncSession = Depends(get_db),
+    credentials: JwtAuthorizationCredentials = Security(utils.access_security)
+):
+    """
+    Endpoint internal untuk melihat detail satu evaluasi.
+    """
+    try:
+        result = await db.execute(
+            select(models.ChatEvaluation).where(models.ChatEvaluation.id == evaluation_id)
+        )
+        evaluation = result.scalars().first()
+        
+        if not evaluation:
+            raise HTTPException(status_code=404, detail="Evaluation not found.")
+        
+        return {
+            "id": evaluation.id,
+            "message_id": evaluation.message_id,
+            "faithfulness_score": evaluation.faithfulness_score,
+            "answer_relevancy_score": evaluation.answer_relevancy_score,
+            "faithfulness_reasoning": evaluation.faithfulness_reasoning,
+            "relevancy_reasoning": evaluation.relevancy_reasoning,
+            "contexts": evaluation.contexts,
+            "status": evaluation.status,
+            "error_message": evaluation.error_message,
+            "created_at": evaluation.created_at,
+            "updated_at": evaluation.updated_at
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error")
