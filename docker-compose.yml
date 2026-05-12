@@ -11,11 +11,34 @@ services:
       POSTGRES_DB: ${DB_NAME:-dbname}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user} -d ${DB_NAME:-dbname}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # Redis untuk Celery Broker
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: doc_qa_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Run Database Migrations
+  migrations:
+    build: .
+    container_name: doc_qa_migrations
+    command: alembic upgrade head
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
 
   # FastAPI Web Application
   web:
@@ -24,40 +47,61 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
+      - ./lancedb_data:/app/lancedb_data
     ports:
       - "8000:8000"
     env_file:
       - .env
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
     environment:
       - DB_HOST=db
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_BACKEND_URL=redis://redis:6379/0
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
 
-  # Celery Worker
-  worker:
+  # Celery Worker - Ingestion
+  worker-ingest:
     build: .
-    container_name: doc_qa_worker
+    container_name: doc_qa_worker_ingest
     command: celery -A src.tasks.celery_task worker --queues=document_task --pool=threads --concurrency=3 --loglevel=info
+    volumes:
+      - .:/app
+      - ./lancedb_data:/app/lancedb_data
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_BACKEND_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Celery Worker - Evaluation
+  worker-eval:
+    build: .
+    container_name: doc_qa_worker_eval
+    command: celery -A src.tasks.celery_task worker --queues=evaluation_task --pool=threads --concurrency=3 --loglevel=info
     volumes:
       - .:/app
     env_file:
       - .env
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
     environment:
       - DB_HOST=db
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_BACKEND_URL=redis://redis:6379/0
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
