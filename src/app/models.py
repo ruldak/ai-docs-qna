@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, Index
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, Index, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from src.database import Base
@@ -46,4 +46,27 @@ class ChatMessage(Base):
 
     __table_args__ = (
         Index("idx_session_created", "session_id", "created_at"),
+    )
+
+class ChatEvaluation(Base):
+    __tablename__ = "chat_evaluations"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id"), unique=True, index=True, nullable=False)
+    
+    faithfulness_score = Column(Float, nullable=True)
+    answer_relevancy_score = Column(Float, nullable=True)
+    
+    faithfulness_reasoning = Column(Text, nullable=True)
+    relevancy_reasoning = Column(Text, nullable=True)
+    
+    contexts = Column(JSON, nullable=True)
+    raw_eval_response = Column(JSON, nullable=True)
+    status = Column(String, default="PENDING", nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("idx_eval_status", "status", "created_at"),
     )
