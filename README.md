@@ -94,30 +94,23 @@ If you prefer to run services manually:
    pip install -r requirements.txt
    ```
 
-2. **Configure Alembic (Database URL)**:
-   Edit the `alembic.ini` file and set the SQLAlchemy URL to point to your local PostgreSQL instance:
-   ```ini
-   # sqlalchemy.url = postgresql://db_username:db_password@db_host/db_name
-   sqlalchemy.url = postgresql://your_username:your_password@localhost/your_database
-   ```
-
-3. **Run Migrations**:
+2. **Run Migrations**:
    ```bash
    alembic upgrade head
    ```
 
-4. **Start FastAPI Server**:
+3. **Start FastAPI Server**:
    ```bash
    uvicorn src.main:app --reload
    ```
 
-5. **Start Celery Workers**:
+4. **Start Celery Workers**:
    ```bash
    # Ingest Worker
-   celery -A src.tasks.celery_task worker --queues=document_task --pool=threads --concurrency=3 --loglevel=info
+   celery -A src.tasks.celery_app worker --queues=document_task --pool=threads --concurrency=3 --loglevel=info
 
    # Evaluation Worker
-   celery -A src.tasks.celery_task worker --queues=evaluation_task --pool=threads --concurrency=3 --loglevel=info
+   celery -A src.tasks.celery_app worker --queues=evaluation_task --pool=threads --concurrency=3 --loglevel=info
    ```
 
 ## 📡 API Endpoints Summary
