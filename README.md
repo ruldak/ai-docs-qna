@@ -1,8 +1,8 @@
-# Legal Document Q&A System (FastAPI + RAG)
+# Document Q&A System (FastAPI + RAG)
 
 ![Preview Image](ss/1qna_document_ss.png)
 
-An advanced AI-powered Q&A system designed for analyzing and interacting with legal documents using Retrieval-Augmented Generation (RAG). This system features asynchronous document processing, vector search, and automated chat evaluation.
+An advanced AI-powered Q&A system designed for analyzing and interacting with documents using Retrieval-Augmented Generation (RAG). This system features asynchronous document processing, vector search, and automated chat evaluation.
 
 ## 🚀 Key Features
 
