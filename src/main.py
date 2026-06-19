@@ -51,3 +51,5 @@ app.include_router(router)
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "version": "2.0.0"}
+
+print("halo)
