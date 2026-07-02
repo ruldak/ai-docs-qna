@@ -4,7 +4,7 @@
 
 An advanced AI-powered Q&A system designed for analyzing and interacting with documents using Retrieval-Augmented Generation (RAG). This system features asynchronous document processing, vector search, and automated chat evaluation.
 
-## 🚀 Key Features
+## Key Features
 
 - **Advanced RAG Engine**: 
     - **Vector Search**: High-performance similarity search powered by **LanceDB** (local file-based vector store).
@@ -15,7 +15,7 @@ An advanced AI-powered Q&A system designed for analyzing and interacting with do
 - **Secure Authentication**: JWT-based authentication with password hashing (Argon2).
 - **Modern Tech Stack**: Built with FastAPI, SQLModel, and LlamaIndex.
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Asynchronous)
 - **AI Orchestration**: [LlamaIndex](https://www.llamaindex.ai/)
@@ -26,7 +26,7 @@ An advanced AI-powered Q&A system designed for analyzing and interacting with do
 - **Task Queue**: [Celery](https://docs.celeryq.dev/) (Redis Broker)
 - **Cloud Storage**: [Supabase Storage](https://supabase.com/storage)
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```text
 ├── alembic/              # Database migrations
@@ -53,7 +53,7 @@ Ensure you have the following installed:
 - Docker and Docker Compose
 - API Keys for: **Groq**, **HuggingFace**, and **Supabase**.
 
-## ⚙️ Installation & Setup
+## Installation & Setup
 
 1. **Clone the Repository**:
    ```bash
@@ -85,7 +85,7 @@ Ensure you have the following installed:
    - Start the FastAPI application on `http://localhost:8000`.
    - Start two Celery workers (one for document ingestion, one for evaluation).
 
-## 🏃‍♂️ Manual Running (Development)
+## Manual Running (Development)
 
 If you prefer to run services manually:
 
