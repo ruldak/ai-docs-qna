@@ -153,6 +153,8 @@ pypdf
 PyPika
 pyproject_hooks
 pyroaring
+pytest
+pytest-asyncio
 python-dateutil
 python-dotenv
 python-multipart
