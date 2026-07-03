@@ -1,7 +1,3 @@
-"""
-Pydantic schemas for request/response validation.
-"""
-
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -132,7 +128,7 @@ class EvaluationDetailResponse(BaseModel):
 
 
 class EvaluationListResponse(BaseModel):
-    """List semua evaluations untuk dipilih (dengan ID)."""
+    """List all evaluations for selection (with ID)."""
     id: int
     message_id: int
     session_id: int

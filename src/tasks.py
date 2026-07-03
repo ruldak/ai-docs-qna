@@ -1,10 +1,3 @@
-"""
-Celery task definitions for background processing.
-Handles document ingestion and chat evaluation.
-
-FIX: Setiap task menggunakan fresh LanceDB connection untuk menghindari stale data.
-"""
-
 import os
 import logging
 from typing import Dict, Any
@@ -66,7 +59,7 @@ def get_db_session() -> Session:
 
 
 def update_document_status(db: Session, document_id: int, status: str) -> bool:
-    """Update document status dengan proper error handling."""
+    """Update document status with proper error handling."""
     try:
         record = db.query(models.Document).filter_by(id=document_id).first()
         if record:
@@ -103,10 +96,10 @@ def process_document(
     is_update: bool = False
 ) -> Dict[str, Any]:
     """
-    Process document ingestion ke LanceDB.
+    Process document ingestion into LanceDB.
 
-    FIX: Setiap task membuat instance LanceDBDocumentManager FRESH
-    untuk menghindari stale cache dari task sebelumnya.
+    FIX: Each task creates a FRESH instance of LanceDBDocumentManager
+    to avoid stale cache from the previous task.
     """
     logger.info(f"[Process] Starting ingestion for document {document_id}")
 
@@ -115,7 +108,6 @@ def process_document(
     doc_manager = LanceDBDocumentManager()
 
     try:
-        # Validate document exists
         doc_record = db.query(models.Document).filter_by(id=document_id).first()
         if not doc_record:
             logger.error(f"Document {document_id} not found in database")
@@ -125,7 +117,6 @@ def process_document(
                 "error": "Document not found in database"
             }
 
-        # Update status to PROCESSING
         update_document_status(db, document_id, "PROCESSING")
 
         try:
@@ -147,7 +138,6 @@ def process_document(
             logger.error(f"[Process] Ingestion FAILED for document {document_id}: {ingest_err}")
             raise self.retry(exc=ingest_err)
 
-        # Update final status
         update_document_status(db, document_id, final_status)
 
         return {
@@ -181,7 +171,7 @@ def evaluate_chat_message(
     question: str
 ) -> Dict[str, Any]:
     """
-    Evaluasi chat message dengan LlamaIndex Groq LLM-as-a-Judge.
+    Evaluate chat message using LlamaIndex Groq LLM-as-a-Judge.
     """
     logger.info(f"[Eval] Starting evaluation {evaluation_id}")
 

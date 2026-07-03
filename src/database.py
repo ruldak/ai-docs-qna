@@ -1,8 +1,3 @@
-"""
-Unified database configuration supporting both Async (FastAPI) and Sync (Celery) operations.
-Uses connection pooling optimized for each use case.
-"""
-
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base

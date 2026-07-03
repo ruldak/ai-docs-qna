@@ -10,13 +10,12 @@ from src.main import app
 from src.database import get_db, Base
 from src.app import models, utils
 
-# Gunakan SQLite in-memory untuk testing (super cepat & terisolasi)
 SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
-    poolclass=StaticPool, # Penting untuk SQLite in-memory agar sharing connection
+    poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
@@ -24,7 +23,7 @@ TestingSessionLocal = sessionmaker(
 
 @pytest_asyncio.fixture
 async def db_session():
-    """Membuat tabel sebelum test dan menghapusnya setelah test selesai."""
+    """Create tables before tests and drop them after tests complete."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
@@ -36,12 +35,12 @@ async def db_session():
 
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession):
-    """HTTP Client yang terhubung ke database testing."""
+    """HTTP Client connected to the testing database."""
     async def override_get_db():
         try:
             yield db_session
         finally:
-            pass # Biarkan fixture db_session yang handle closing
+            pass
 
     app.dependency_overrides[get_db] = override_get_db
     
@@ -53,10 +52,10 @@ async def client(db_session: AsyncSession):
 
 @pytest_asyncio.fixture
 async def test_user(db_session: AsyncSession):
-    """Membuat user dummy langsung di database testing."""
+    """Create a dummy user directly in the testing database."""
     user = models.User(
         email="testuser@example.com",
-        password=utils.get_password_hash("password123"), # Hash asli agar login valid
+        password=utils.get_password_hash("password123"),
         full_name="Test User",
         role="user",
         is_active=True
@@ -68,7 +67,7 @@ async def test_user(db_session: AsyncSession):
 
 @pytest_asyncio.fixture
 async def auth_headers(test_user: models.User):
-    """Generate JWT Token valid untuk test_user."""
+    """Generate a valid JWT token for test_user."""
     access_token = utils.access_security.create_access_token(
         subject={"user_id": test_user.id}
     )

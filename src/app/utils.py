@@ -1,7 +1,3 @@
-"""
-Utility functions: Auth, Query Engine, Supabase client.
-"""
-
 import os
 import cohere
 from datetime import timedelta
@@ -30,12 +26,12 @@ password_hasher = PasswordHash.recommended()  # Argon2
 
 
 def get_password_hash(password: str) -> str:
-    """Hash password saat registrasi."""
+    """Hash password during registration."""
     return password_hasher.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifikasi password saat login."""
+    """Verify password during login."""
     return password_hasher.verify(plain_password, hashed_password)
 
 
@@ -61,7 +57,7 @@ refresh_security = JwtRefreshBearer(
 
 class LlamaIndexQueryEngine:
     """
-    Query engine untuk RAG menggunakan LlamaIndex + LanceDB.
+    Query engine for RAG using LlamaIndex + LanceDB.
     """
 
     def __init__(self):
@@ -75,20 +71,19 @@ class LlamaIndexQueryEngine:
 
         Settings.llm = self.llm
 
-        # Cohere client untuk reranking (jika diperlukan nanti)
         self.cohere_client = cohere.Client(settings.cohere_api_key)
 
     async def query(self, query: str, document_id: int, top_k: int = 5) -> str:
         """
-        Query via LlamaIndex retriever. Return string jawaban saja.
+        Query via LlamaIndex retriever. Return only the answer string.
 
         Args:
-            query: Pertanyaan user
-            document_id: ID dokumen untuk filter
-            top_k: Jumlah top results
+            query: User question
+            document_id: Document ID for filtering
+            top_k: Number of top results
 
         Returns:
-            String jawaban
+            Answer string
         """
         response = await self._execute_query(query, document_id, top_k)
         if response is None:
@@ -102,16 +97,16 @@ class LlamaIndexQueryEngine:
         top_k: int = 5
     ) -> Tuple[str, List[str]]:
         """
-        Query + return (jawaban, list_contexts).
-        Contexts diambil dari source_nodes LlamaIndex.
+        Query + return (answer, list_contexts).
+        Contexts are retrieved from LlamaIndex source_nodes.
 
         Args:
-            query: Pertanyaan user
-            document_id: ID dokumen untuk filter
-            top_k: Jumlah top results
+            query: User question
+            document_id: Document ID for filtering
+            top_k: Number of top results
 
         Returns:
-            Tuple (jawaban, list konteks)
+            Tuple (answer, list of contexts)
         """
         response = await self._execute_query(query, document_id, top_k)
 
@@ -121,7 +116,6 @@ class LlamaIndexQueryEngine:
                 []
             )
 
-        # Ekstrak teks dari source nodes sebagai contexts
         contexts = []
         if hasattr(response, "source_nodes") and response.source_nodes:
             for node in response.source_nodes:
@@ -131,15 +125,15 @@ class LlamaIndexQueryEngine:
 
     async def _execute_query(self, query: str, document_id: int, top_k: int = 5):
         """
-        Internal: execute query engine dan return response object.
+        Internal: execute query engine and return response object.
 
         Args:
-            query: Pertanyaan user
-            document_id: ID dokumen untuk filter
-            top_k: Jumlah top results
+            query: User question
+            document_id: Document ID for filtering
+            top_k: Number of top results
 
         Returns:
-            Response object atau None jika error/empty
+            Response object or None if error/empty
         """
         vector_store = create_vector_store()
 
@@ -148,15 +142,13 @@ class LlamaIndexQueryEngine:
             embed_model=self.embed_model
         )
 
-        # FIX KRITIS: Gunakan "postgres_id" bukan "doc_id"
-        # Karena di lancedb_manager.py metadata key adalah "postgres_id"
         filters = MetadataFilters(
             filters=[ExactMatchFilter(key="postgres_id", value=str(document_id))]
         )
 
         query_engine = index.as_query_engine(
             filters=filters,
-            similarity_top_k=top_k * 3,  # Ambil lebih banyak untuk diversity
+            similarity_top_k=top_k * 3,
             response_mode="tree_summarize",
             verbose=True
         )
@@ -168,8 +160,6 @@ class LlamaIndexQueryEngine:
             logger.warning(f"Query error for doc_id={document_id}: {e}")
             return None
 
-
-# Singleton query engine
 _query_engine: Optional[LlamaIndexQueryEngine] = None
 
 
@@ -198,8 +188,6 @@ def get_supabase_client() -> Client:
         )
     return _supabase_client
 
-
-# Legacy compatibility
 supabase = get_supabase_client()
 
 
@@ -209,10 +197,10 @@ supabase = get_supabase_client()
 
 def load_system_prompt(document_id: int) -> str:
     """
-    Load system prompt dari file dan format dengan document_id.
+    Load system prompt from file and format with document_id.
 
     Args:
-        document_id: ID dokumen yang sedang di-query
+        document_id: ID of the document being queried
 
     Returns:
         Formatted system prompt string
@@ -220,7 +208,6 @@ def load_system_prompt(document_id: int) -> str:
     prompt_file_path = Path(__file__).parent / "system_prompt.txt"
 
     if not prompt_file_path.exists():
-        # Fallback prompt jika file tidak ada
         return f"""Anda adalah asisten AI yang membantu menjawab pertanyaan berdasarkan dokumen.
 Dokumen ID: {document_id}
 

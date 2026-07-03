@@ -1,9 +1,3 @@
-"""
-LlamaIndex + LanceDB integration.
-LlamaIndex untuk orchestration (chunking, query, LLM).
-LanceDB = single source of truth (local file-based, tidak ada di RAM).
-"""
-
 import os
 from typing import List, Optional
 from llama_index.core import Document, Settings, VectorStoreIndex, StorageContext
@@ -22,7 +16,6 @@ logger = logging.getLogger(__name__)
 LANCEDB_URI = settings.lancedb_uri
 LANCEDB_TABLE = settings.lancedb_table
 
-# Singleton instances
 _embed_model: Optional[HuggingFaceInferenceAPIEmbedding] = None
 
 
@@ -40,7 +33,7 @@ def get_embed_model() -> HuggingFaceInferenceAPIEmbedding:
 def create_vector_store() -> LanceDBVectorStore:
     """
     Create FRESH vector store instance.
-    TIDAK singleton — selalu create baru untuk menghindari cache stale.
+    NOT a singleton — always create new to avoid stale cache.
     """
     vs = LanceDBVectorStore(
         uri=LANCEDB_URI,
@@ -49,7 +42,7 @@ def create_vector_store() -> LanceDBVectorStore:
         query_type="vector",
     )
 
-    # FIX untuk bug llama-index < 0.12: _metadata_keys None setelah restart
+    # Fix for llama-index < 0.12 bug: _metadata_keys is None after restart
     if vs._metadata_keys is None:
         try:
             if vs._table is not None:
@@ -74,8 +67,8 @@ def create_vector_store() -> LanceDBVectorStore:
 
 class LanceDBDocumentManager:
     """
-    Pakai LlamaIndex untuk orchestration, LanceDB untuk storage.
-    Tidak ada nodes di RAM — selalu fetch dari LanceDB.
+    Use LlamaIndex for orchestration, LanceDB for storage.
+    No nodes in RAM — always fetch from LanceDB.
     """
 
     def __init__(self):
@@ -86,7 +79,6 @@ class LanceDBDocumentManager:
             vector_store=self.vector_store
         )
 
-        # LlamaIndex Settings
         Settings.embed_model = self.embed_model
         Settings.llm = Groq(
             model=settings.llm_model,
@@ -96,7 +88,7 @@ class LanceDBDocumentManager:
 
     def upsert_document(self, doc_id: str, text: str) -> str:
         """
-        Upsert dokumen ke LanceDB.
+        Upsert document to LanceDB.
 
         Args:
             doc_id: Unique document identifier (postgres_id)
@@ -104,7 +96,7 @@ class LanceDBDocumentManager:
             metadata: Additional metadata
 
         Returns:
-            doc_id yang di-upsert
+            The upserted doc_id
         """
         if not text or not text.strip():
             raise ValueError("Document text cannot be empty")
@@ -129,16 +121,13 @@ class LanceDBDocumentManager:
             show_progress=True
         )
 
-        # Setelah upsert pertama, pastikan metadata_keys terisi
         if not self.vector_store._metadata_keys:
             self.vector_store._metadata_keys = list(doc.metadata.keys())
 
-        # CRITICAL: Force close connection untuk mencegah stale cache
-        # LanceDB menyimpan cache di connection level
+        # CRITICAL: Force close the connection to prevent a stale cache
+        # LanceDB maintains a cache at the connection level
         try:
             if hasattr(self.vector_store, '_connection') and self.vector_store._connection:
-                # LanceDB Python API: connection akan auto-refresh saat next access
-                # Tapi kita force cleanup untuk memastikan
                 delattr(self.vector_store, '_connection')
         except Exception:
             pass
@@ -147,12 +136,11 @@ class LanceDBDocumentManager:
         return doc_id
 
     def delete_document(self, doc_id: str) -> None:
-        """Hapus dokumen dari LanceDB berdasarkan doc_id."""
+        """Delete document from LanceDB by doc_id."""
         try:
             self.vector_store.delete(ref_doc_id=doc_id)
             logger.info(f"🗑️  Deleted doc_id: {doc_id}")
 
-            # Force cleanup connection setelah delete
             try:
                 if hasattr(self.vector_store, '_connection') and self.vector_store._connection:
                     delattr(self.vector_store, '_connection')
@@ -163,7 +151,7 @@ class LanceDBDocumentManager:
             raise
 
     def delete_all(self) -> None:
-        """Hapus semua data di table. USE WITH CAUTION."""
+        """Delete all data in the table. USE WITH CAUTION."""
         if self.vector_store._table_exists():
             self.vector_store._connection.drop_table(LANCEDB_TABLE)
             logger.warning(f"⚠️  Dropped entire table: {LANCEDB_TABLE}")

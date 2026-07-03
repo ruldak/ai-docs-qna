@@ -1,8 +1,3 @@
-"""
-LLM-as-a-Judge evaluator menggunakan LlamaIndex + Groq.
-Mengevaluasi faithfulness dan relevancy jawaban RAG.
-"""
-
 import json
 import re
 from typing import List, Optional
@@ -63,22 +58,18 @@ class PromptInjectionError(Exception):
 
 def sanitize_for_prompt(text: str, max_length: int = 10000) -> str:
     """
-    Sanitize text untuk prompt LLM.
-    - Escape curly braces untuk mencegah format string issues
+    Sanitize text for LLM prompts.
+    - Escape curly braces to prevent format string issues
     - Limit length
     - Remove null bytes
     """
     if not text:
         return ""
 
-    # Remove null bytes
     text = text.replace("\x00", "")
 
-    # Escape curly braces untuk mencegah format string issues
-    # Tapi hanya escape yang tidak valid untuk JSON
     text = text.replace("{", "{{").replace("}", "}}")
 
-    # Truncate jika terlalu panjang
     if len(text) > max_length:
         text = text[:max_length] + "\n...[truncated]"
 
@@ -87,10 +78,9 @@ def sanitize_for_prompt(text: str, max_length: int = 10000) -> str:
 
 def validate_json_output(content: str) -> dict:
     """
-    Validate dan parse JSON output dari LLM.
+    Validate and parse JSON output from the LLM.
     Handle common formatting issues.
     """
-    # Remove markdown code blocks
     content = content.strip()
     if content.startswith("```json"):
         content = content[7:]
@@ -101,11 +91,9 @@ def validate_json_output(content: str) -> dict:
 
     content = content.strip()
 
-    # Try parsing
     try:
         return json.loads(content)
     except json.JSONDecodeError as e:
-        # Fallback: try to extract JSON from text
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
             try:
@@ -118,14 +106,14 @@ def validate_json_output(content: str) -> dict:
 
 
 class LlamaIndexEvaluator:
-    """Evaluator menggunakan LlamaIndex LLM untuk menilai kualitas RAG."""
+    """Evaluator using LlamaIndex LLM to assess RAG quality."""
 
     def __init__(self, llm):
         self.llm = llm
 
     def _call_judge(self, prompt: str) -> dict:
         """
-        Call judge LLM dengan proper error handling.
+        Call the judge LLM with proper error handling.
 
         Args:
             prompt: Sanitized prompt
@@ -156,17 +144,16 @@ class LlamaIndexEvaluator:
         contexts: List[str]
     ) -> dict:
         """
-        Evaluasi faithfulness jawaban terhadap konteks.
+        Evaluate the faithfulness of the answer against the context.
 
         Args:
-            question: Pertanyaan user
-            answer: Jawaban AI
-            contexts: List konteks retrieval
+            question: User question
+            answer: AI answer
+            contexts: List of retrieved contexts
 
         Returns:
-            Dict dengan score dan reasoning
+            Dict with score and reasoning
         """
-        # Sanitize inputs
         safe_question = sanitize_for_prompt(question)
         safe_answer = sanitize_for_prompt(answer)
 
@@ -184,14 +171,14 @@ class LlamaIndexEvaluator:
 
     def evaluate_relevancy(self, question: str, answer: str) -> dict:
         """
-        Evaluasi relevansi jawaban terhadap pertanyaan.
+        Evaluate the relevance of the answer to the question.
 
         Args:
-            question: Pertanyaan user
-            answer: Jawaban AI
+            question: User question
+            answer: AI answer
 
         Returns:
-            Dict dengan score dan reasoning
+            Dict with score and reasoning
         """
         safe_question = sanitize_for_prompt(question)
         safe_answer = sanitize_for_prompt(answer)
@@ -210,15 +197,15 @@ class LlamaIndexEvaluator:
         contexts: List[str]
     ) -> dict:
         """
-        Evaluasi lengkap: faithfulness + relevancy.
+        Complete evaluation: faithfulness + relevancy.
 
         Args:
-            question: Pertanyaan user
-            answer: Jawaban AI
-            contexts: List konteks retrieval
+            question: User question
+            answer: AI answer
+            contexts: List of retrieved contexts
 
         Returns:
-            Dict dengan semua scores dan reasoning
+            Dict with all scores and reasoning
         """
         faithfulness = self.evaluate_faithfulness(question, answer, contexts)
         relevancy = self.evaluate_relevancy(question, answer)

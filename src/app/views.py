@@ -1,7 +1,3 @@
-"""
-API endpoint logic: Auth, Documents, Chat, Evaluation, Tasks.
-"""
-
 import os
 import io
 import asyncio
@@ -69,7 +65,7 @@ async def get_current_user(
 # ============================================================================
 
 def safe_decode(content: bytes) -> str:
-    """Decode bytes ke string dengan deteksi encoding otomatis."""
+    """Decode bytes to string with automatic encoding detection."""
     if not content:
         return ""
 
@@ -89,7 +85,7 @@ def safe_decode(content: bytes) -> str:
 
 
 def extract_text_from_file(content: bytes, content_type: str) -> str:
-    """Ekstrak teks dari berbagai tipe file."""
+    """Extract text from various file types."""
     if not content:
         raise ValueError("File content is empty")
 
@@ -110,7 +106,7 @@ def extract_text_from_file(content: bytes, content_type: str) -> str:
 
 
 def validate_file(file: UploadFile) -> str:
-    """Validasi file upload dan return normalized content type."""
+    """Validate uploaded file and return normalized content type."""
     content_type = file.content_type or ""
     filename = file.filename or ""
 
@@ -198,7 +194,7 @@ async def login(
     user: schemas.UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
-    """Login user dan return JWT tokens."""
+    """Login user and return JWT tokens."""
     try:
         result = await db.execute(select(models.User).where(models.User.email == user.email))
         user_data = result.scalars().first()
@@ -265,7 +261,7 @@ async def get_document_by_id(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get single document by ID dengan signed URL."""
+    """Get single document by ID with a signed URL."""
     try:
         result = await db.execute(
             select(models.Document).where(
@@ -324,7 +320,7 @@ async def update_document(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Update document metadata atau upload file baru."""
+    """Update document metadata or upload a new file."""
     if not title and not description and not file:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -446,7 +442,7 @@ async def post_document(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Upload dokumen baru dan trigger processing."""
+    """Upload new document and trigger processing."""
     try:
         result = await db.execute(select(models.Document).where(models.Document.title == title))
         if result.scalars().first():
@@ -550,7 +546,7 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Delete document dari DB, vector store, dan Supabase storage."""
+    """Delete document from DB, vector store, and Supabase storage."""
     try:
         result = await db.execute(
             select(models.Document).where(
@@ -607,7 +603,7 @@ async def get_sessions(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get all chat sessions untuk current user."""
+    """Get all chat sessions for the current user."""
     try:
         result = await db.execute(
             select(models.ChatSession).where(models.ChatSession.user_id == current_user.id)
@@ -652,7 +648,7 @@ async def session_query(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Query dokumen dengan RAG. Simpan history dan trigger evaluation."""
+    """Query document with RAG. Save history and trigger evaluation."""
     try:
         query_engine = utils.get_query_engine()
 
@@ -692,7 +688,6 @@ async def session_query(
                 detail="Document is pending indexing. Please wait and try again later."
             )
 
-        # Simpan user message
         user_message = models.ChatMessage(
             session_id=chat_session_id,
             user_id=current_user.id,
@@ -702,7 +697,6 @@ async def session_query(
         db.add(user_message)
         await db.flush()
 
-        # Load conversation history
         result = await db.execute(
             select(models.ChatMessage)
             .where(models.ChatMessage.session_id == chat_session_id)
@@ -717,7 +711,6 @@ async def session_query(
 
         system_prompt = utils.load_system_prompt(input.document_id)
 
-        # Query dengan RAG
         answer, contexts = await query_engine.query_with_sources(
             query=input.message,
             document_id=input.document_id
@@ -741,7 +734,6 @@ Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."
         response = await llm.achat(llm_messages)
         final_answer = response.message.content
 
-        # Simpan assistant message
         assistant_message = models.ChatMessage(
             session_id=chat_session_id,
             user_id=current_user.id,
@@ -751,7 +743,6 @@ Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."
         db.add(assistant_message)
         await db.flush()
 
-        # Create evaluation record
         evaluation = models.ChatEvaluation(
             message_id=assistant_message.id,
             contexts=contexts,
@@ -760,7 +751,6 @@ Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat."
         db.add(evaluation)
         await db.commit()
 
-        # Trigger background evaluation
         evaluate_chat_message.delay(evaluation.id, question=input.message)
 
         return {"response": final_answer}
@@ -783,7 +773,7 @@ async def get_session_history(
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get chat history untuk session."""
+    """Get chat history for a session."""
     try:
         result = await db.execute(
             select(models.ChatMessage).where(
@@ -813,8 +803,8 @@ async def get_evaluations_list(
     current_user: models.User = Depends(get_current_user)
 ):
     """
-    Get list semua evaluations dengan ID.
-    Digunakan untuk memilih evaluation sebelum lihat detail.
+    Get a list of all evaluations with IDs.
+    Used to select an evaluation before viewing details.
     """
     try:
         result = await db.execute(
@@ -858,8 +848,6 @@ async def get_evaluations_list(
 
 @router.get("/admin/evaluations/stats", response_model=List[schemas.EvaluationStatsResponse])
 async def get_evaluation_stats(
-    # Renamed from /admin/evaluations to /admin/evaluations/stats
-
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -905,10 +893,9 @@ async def get_evaluation_detail(
     current_user: models.User = Depends(get_current_user)
 ):
     """
-    Get detail satu evaluasi lengkap dengan pertanyaan dan jawaban.
+    Get detail of a single evaluation complete with question and answer.
     """
     try:
-        # Join dengan ChatMessage untuk ambil question dan answer
         result = await db.execute(
             select(
                 models.ChatEvaluation.id,

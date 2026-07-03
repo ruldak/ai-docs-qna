@@ -1,8 +1,3 @@
-"""
-Application entry point.
-Configures FastAPI dengan lifespan management, logging, dan middleware.
-"""
-
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -30,20 +25,18 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 app = FastAPI(
     title="Document Q&A with AI",
-    description="RAG-based document question answering system dengan evaluasi otomatis",
+    description="RAG-based document question answering system with automated evaluation",
     version="2.0.0"
 )
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Restrict di production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(router)
 
 

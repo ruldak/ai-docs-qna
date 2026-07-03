@@ -1,8 +1,3 @@
-"""
-SQLAlchemy database models.
-Defines User, Document, ChatSession, ChatMessage, and ChatEvaluation.
-"""
-
 from sqlalchemy import (
     Column, Integer, String, DateTime, Boolean, Text, 
     ForeignKey, JSON, Index, Float, func
@@ -22,7 +17,6 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
 
-    # Relationships
     documents = relationship("Document", back_populates="owner", cascade="all, delete-orphan")
     chat_sessions = relationship("ChatSession", back_populates="owner", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="owner")
@@ -40,7 +34,6 @@ class Document(Base):
     file_path = Column(String(1000), nullable=True)
     indexed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    # Relationships
     owner = relationship("User", back_populates="documents")
 
     __table_args__ = (
@@ -56,7 +49,6 @@ class ChatSession(Base):
     title = Column(String(500), default="untitled")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # Relationships
     owner = relationship("User", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
 
@@ -71,7 +63,6 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
-    # Relationships
     session = relationship("ChatSession", back_populates="messages")
     owner = relationship("User", back_populates="messages")
     evaluation = relationship("ChatEvaluation", back_populates="message", uselist=False, cascade="all, delete-orphan")
@@ -106,7 +97,6 @@ class ChatEvaluation(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # Relationships
     message = relationship("ChatMessage", back_populates="evaluation")
 
     __table_args__ = (
