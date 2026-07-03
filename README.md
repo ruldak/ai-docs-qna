@@ -115,6 +115,20 @@ If you prefer to run services manually:
    celery -A src.tasks.celery_app worker --queues=evaluation_task --pool=threads --concurrency=3 --loglevel=info
    ```
 
+## Running Tests
+
+The test suite uses **pytest** and executes against an in-memory SQLite database (no database setup required).
+
+1. **Activate Virtual Environment**:
+   ```bash
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+2. **Run All Tests**:
+   ```bash
+   pytest
+   ```
+
 ## 📡 API Endpoints Summary
 
 ### Authentication
