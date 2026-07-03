@@ -11,42 +11,40 @@ logger = logging.getLogger(__name__)
 # PROMPTS
 # ============================================================================
 
-FAITHFULNESS_PROMPT = """Kamu adalah evaluator kualitas AI yang ketat dan objektif. 
-Tugasmu menilai sejauh mana jawaban berikut didukung oleh konteks yang diberikan.
-Jawaban TIDAK BOLEH mengandung informasi yang tidak ada di konteks (hallucination).
+FAITHFULNESS_PROMPT = """You are a strict and objective AI quality evaluator.
+Your task is to assess to what extent the following answer is supported by the provided context.
+The answer MUST NOT contain any information that is not present in the context (hallucination).
 
-KONTEKS:
+CONTEXT:
 {contexts}
 
-PERTANYAAN USER: {question}
-JAWABAN AI: {answer}
+USER QUESTION: {question}
+AI ANSWER: {answer}
 
-Beri nilai FAITHFULNESS antara 0.0 (tidak ada dukungan sama sekali, banyak hallucination) 
-sampai 1.0 (100% didukung konteks, zero hallucination). 
-Berikan juga penjelasan singkat dalam Bahasa Indonesia.
+Provide a FAITHFULNESS score between 0.0 (no support at all, high hallucination) to 1.0 (100% supported by context, zero hallucination).
+Also provide a brief explanation in English.
 
-Output HARUS dalam format JSON valid:
+Output MUST be in a valid JSON format:
 {{
   "score": 0.95,
-  "reasoning": "Jawaban didukung oleh konteks poin 1 dan 3, tidak ada informasi yang dibuat-buat."
+  "reasoning": "The answer is supported by context points 1 and 3, with no fabricated information."
 }}
 """
 
-RELEVANCY_PROMPT = """Kamu adalah evaluator kualitas AI yang ketat dan objektif.
-Tugasmu menilai sejauh mana jawaban relevan dengan pertanyaan yang diajukan.
-Jawaban yang baik langsung menjawab pertanyaan tanpa informasi yang tidak diminta.
+RELEVANCY_PROMPT = """You are a strict and objective AI quality evaluator.
+Your task is to assess to what extent the answer is relevant to the question asked.
+A good answer directly addresses the question without containing unsolicited information.
 
-PERTANYAAN USER: {question}
-JAWABAN AI: {answer}
+USER QUESTION: {question}
+AI ANSWER: {answer}
 
-Beri nilai RELEVANCY antara 0.0 (sama sekali tidak relevan) sampai 1.0 
-(sangat relevan, tepat, dan komprehensif). 
-Berikan juga penjelasan singkat dalam Bahasa Indonesia.
+Provide a RELEVANCY score between 0.0 (not relevant at all) to 1.0 (highly relevant, precise, and comprehensive).
+Also provide a brief explanation in English.
 
-Output HARUS dalam format JSON valid:
+Output MUST be in a valid JSON format:
 {{
   "score": 0.88,
-  "reasoning": "Jawaban langsung menjawab pertanyaan tanpa informasi yang tidak diminta."
+  "reasoning": "The answer directly addresses the question without any unsolicited information."
 }}
 """
 
@@ -124,7 +122,7 @@ class LlamaIndexEvaluator:
         messages = [
             ChatMessage(
                 role="system",
-                content="Kamu adalah AI evaluator. Selalu output JSON valid."
+                content="You are an AI evaluator. Always output valid JSON."
             ),
             ChatMessage(role="user", content=prompt)
         ]

@@ -112,7 +112,7 @@ class LlamaIndexQueryEngine:
 
         if response is None:
             return (
-                "Maaf, tidak dapat menemukan informasi yang relevan untuk pertanyaan Anda.",
+                "Sorry, we could not find relevant information for your question.",
                 []
             )
 
@@ -208,14 +208,14 @@ def load_system_prompt(document_id: int) -> str:
     prompt_file_path = Path(__file__).parent / "system_prompt.txt"
 
     if not prompt_file_path.exists():
-        return f"""Anda adalah asisten AI yang membantu menjawab pertanyaan berdasarkan dokumen.
-Dokumen ID: {document_id}
+        return f"""You are an AI assistant that helps answer questions based on documents.
+Document ID: {document_id}
 
-Instruksi:
-1. Jawab berdasarkan informasi dari dokumen yang diberikan
-2. Jika informasi tidak cukup, jelaskan dengan jujur
-3. Gunakan Bahasa Indonesia yang baik dan benar
-4. Berikan jawaban yang detail dan komprehensif
+Instructions:
+1. Answer strictly based on the provided document context.
+2. If the information is insufficient, explain honestly.
+3. Respond in Indonesian (or the language of the user's question) unless requested otherwise.
+4. Provide detailed and comprehensive answers.
 """
 
     with open(prompt_file_path, "r", encoding="utf-8") as f:

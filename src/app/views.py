@@ -718,16 +718,15 @@ async def session_query(
 
         llm_messages = [
             ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=f"""Berikut riwayat percakapan sebelumnya:
+            ChatMessage(role="user", content=f"""Here is the previous conversation history:
 {history_text}
 
-Berikut informasi relevan dari dokumen:
+Here is the relevant information from the document:
 {answer}
 
-Pertanyaan user: {input.message}
+User question: {input.message}
 
-Jawablah pertanyaan di atas secara detail, komprehensif, dan lengkap berdasarkan informasi dari dokumen. 
-Jika informasi tidak cukup, jelaskan alasannya. Jangan berikan jawaban singkat.""")
+Answer the above question in detail, comprehensively, and completely based on the information from the document. If the information is insufficient, explain why. Do not provide a short answer.""")
         ]
 
         llm = query_engine.llm
